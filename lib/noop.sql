@@ -1,0 +1,2 @@
+-- Intentionally empty. evidence.sql includes this instead of
+-- oracle_reports.sql for a run that took no AWR snapshots.

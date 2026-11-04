@@ -1,5 +1,9 @@
 # First thread spec (from Oracle)
 
+> Status: implemented and verified on 19.27. The harness targets 19c only. Where it
+> deliberately differs from this brief (and why), see README.md, sections
+> "Differences from SPEC.md" and "Findings beyond the original brief".
+
 **Goal:** repeatable Oracle test case showing DROP PARTITION on a busy partitioned table invalidates a hot cursor and causes `cursor: pin S wait on X`, while EXCHANGE PARTITION on the same partition leaves the cursor valid. Needs 12.2+, or 11.2.0.4/12.1 with the bug 24817834 backport.
 
 ## Build
