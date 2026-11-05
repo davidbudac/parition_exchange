@@ -1,7 +1,8 @@
 -- =====================================================================
 -- cleanup.sql - stop any workers and drop every object the harness
 -- created in this schema (tables, results, code, views).
--- To remove the schema itself, run admin/drop_user.sql as a DBA.
+-- Keeps the user. Run by ./5_cleanup.sh --keep-user; plain ./5_cleanup.sh
+-- drops the user itself (admin/drop_user.sql).
 -- =====================================================================
 set lines 200 serveroutput on size unlimited format wrapped feedback off
 whenever sqlerror continue

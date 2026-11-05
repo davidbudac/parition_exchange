@@ -1,0 +1,551 @@
+<title>Exchange Test Walkthrough</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a run sheet. One numbered rail down the left, one stop per
+   step script, each stop showing what you type and what the screen shows.
+   Same tokens as guide.html: red = DROP / invalidated, teal = EXCHANGE / still valid. */
+:root{
+  --bg:#f3f5f7; --surface:#ffffff; --sunken:#e9edf2;
+  --ink:#14202c; --muted:#556172; --line:#d6dce4; --line-strong:#8f9aa9;
+  --drop:#bf3920; --drop-soft:#f7e0da; --keep:#0b7869; --keep-soft:#d4eee8;
+  --f-display:"Archivo","Helvetica Neue",Arial,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1419; --surface:#151d26; --sunken:#111921;
+    --ink:#e3e9ef; --muted:#97a3b3; --line:#26313c; --line-strong:#5a6878;
+    --drop:#f2725a; --drop-soft:#3b1f19; --keep:#3fc4ae; --keep-soft:#11312c;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1419; --surface:#151d26; --sunken:#111921;
+  --ink:#e3e9ef; --muted:#97a3b3; --line:#26313c; --line-strong:#5a6878;
+  --drop:#f2725a; --drop-soft:#3b1f19; --keep:#3fc4ae; --keep-soft:#11312c;
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:16px/1.6 var(--f-body);margin:0;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.page{max-width:1080px;margin:0 auto;padding-block:48px 96px;display:flex;flex-direction:column;gap:22px;min-width:0}
+.page > *{min-width:0;max-width:100%}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;line-height:1.15}
+h1{font-size:clamp(2.3rem,5.6vw,3.8rem);font-weight:800;font-stretch:78%;letter-spacing:-.015em}
+h2{font-size:1.6rem;font-weight:750;font-stretch:85%;margin-top:28px;padding-top:26px;border-top:1px solid var(--line)}
+p{margin:0}
+code{font-family:var(--f-mono);font-size:.88em;background:var(--sunken);padding:.08em .32em;border-radius:3px}
+.eyebrow{font-family:var(--f-mono);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.15rem;line-height:1.55;max-width:62ch}
+.muted{color:var(--muted)}
+.t-drop{color:var(--drop)} .t-keep{color:var(--keep)}
+
+/* who runs what */
+.actors{display:flex;flex-wrap:wrap;gap:8px 10px;font-size:.86rem}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:2px 10px 2px 8px;border:1px solid var(--line-strong);border-radius:999px;
+  background:var(--surface);font-size:.8rem;white-space:nowrap;line-height:1.6}
+.chip::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--line-strong)}
+.chip.dba::before{background:var(--ink);border-radius:50%}
+.chip.shell::before{background:var(--ink)}
+.chip.sql::before{background:var(--keep)}
+.chip.job::before{background:var(--keep);border-radius:50%}
+.chip.file::before{background:transparent;border:1.5px solid var(--muted)}
+
+/* diagrams */
+figure{margin:0;display:flex;flex-direction:column;gap:10px;min-width:0}
+figure.dgm{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px}
+figcaption{font-size:.9rem;color:var(--muted);max-width:80ch}
+figcaption b{color:var(--ink);font-weight:600}
+.scroll{overflow-x:auto;min-width:0}
+.dg{display:block;width:100%;height:auto;min-width:720px;color:var(--ink)}
+.dg text{font-family:var(--f-body);font-size:13px;fill:currentColor}
+.dg .b{font-weight:600}
+.dg .mono{font-family:var(--f-mono);font-size:12.5px}
+.dg .sm{font-size:11.5px}
+.dg .mut{fill:var(--muted)}
+.dg .t-drop{fill:var(--drop)} .dg .t-keep{fill:var(--keep)}
+.dg .box{fill:var(--surface);stroke:var(--line-strong);stroke-width:1.2}
+.dg .sunk{fill:var(--sunken);stroke:var(--line);stroke-width:1}
+.dg .box-drop{fill:var(--drop-soft);stroke:var(--drop);stroke-width:1.2}
+.dg .box-keep{fill:var(--keep-soft);stroke:var(--keep);stroke-width:1.2}
+.dg .fill-mut{fill:var(--line-strong)} .dg .fill-ink{fill:var(--ink)}
+.dg .dash{stroke-dasharray:5 4}
+.dg .ln{stroke:var(--line-strong);stroke-width:1.4;fill:none}
+.dg .ln-drop{stroke:var(--drop);fill:none} .dg .ln-keep{stroke:var(--keep);fill:none}
+.dg .grid{stroke:var(--line);stroke-width:1}
+.dg .ah{fill:var(--line-strong)}
+
+/* the rail */
+.rail{display:flex;flex-direction:column;gap:0;min-width:0}
+.stop{display:grid;grid-template-columns:64px minmax(0,1fr);gap:0 18px;min-width:0}
+.stop > .mark{position:relative;display:flex;justify-content:center}
+.stop > .mark::after{content:"";position:absolute;top:44px;bottom:-4px;left:50%;width:2px;margin-left:-1px;background:var(--line)}
+.stop:last-child > .mark::after{display:none}
+.num{position:relative;z-index:1;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;
+  background:var(--surface);border:2px solid var(--ink);font-family:var(--f-display);font-weight:800;font-stretch:80%;font-size:1.05rem;
+  font-variant-numeric:tabular-nums}
+.stop.sub > .mark .num{width:38px;height:38px;margin-top:3px;font-size:.92rem;border-width:1.5px}
+.stop.drop .num{border-color:var(--drop);color:var(--drop)}
+.stop.keep .num{border-color:var(--keep);color:var(--keep)}
+.stop > .body{display:flex;flex-direction:column;gap:12px;padding-bottom:40px;min-width:0}
+.stop.sub > .body{padding-bottom:32px}
+.head{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;padding-top:6px}
+.head h3{font-size:1.35rem;font-weight:750;font-stretch:88%}
+.head h3 .f{font-family:var(--f-mono);font-weight:500;font-stretch:100%;font-size:.92em}
+.head .when{font-family:var(--f-mono);font-size:.8rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.head .chips{display:flex;flex-wrap:wrap;gap:6px;width:100%}
+.say{max-width:70ch}
+.nest{border-left:2px dashed var(--line-strong);margin-left:-50px;padding-left:28px;display:flex;flex-direction:column;min-width:0}
+@media (max-width:640px){
+  .stop{grid-template-columns:44px minmax(0,1fr);gap:0 12px}
+  .num{width:38px;height:38px;font-size:.92rem}
+  .stop.sub > .mark .num{width:34px;height:34px}
+  .stop > .mark::after{top:38px}
+  .nest{margin-left:-35px;padding-left:16px}
+}
+
+/* terminal blocks */
+.term{background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden;gap:0}
+.term.you{border-color:var(--line-strong)}
+.term figcaption{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 14px;padding:6px 14px;border-bottom:1px solid var(--line);
+  background:var(--sunken);font-family:var(--f-mono);font-size:.74rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);max-width:none}
+.term figcaption .file{text-transform:none;letter-spacing:0;color:var(--ink)}
+.term pre{margin:0;padding:12px 14px;overflow:auto;font:12.8px/1.55 var(--f-mono);color:var(--ink);tab-size:2}
+.term .pr{color:var(--muted);user-select:none}
+.term .cmd{font-weight:500}
+.term .ph{color:var(--muted);font-style:italic}
+.term .el{color:var(--muted)}
+.term .ok{color:var(--keep);font-weight:500}
+.pair{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+
+/* results list */
+.files{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+.fileitem{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 14px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.fileitem code{background:none;padding:0;font-size:.82rem;word-break:break-all}
+.fileitem span{font-size:.85rem;color:var(--muted)}
+.fileitem.main{border-color:var(--keep);background:var(--keep-soft)}
+footer{margin-top:24px;padding-top:18px;border-top:1px solid var(--line);font-size:.86rem;color:var(--muted);display:flex;flex-direction:column;gap:6px;max-width:80ch}
+</style>
+
+<main class="page">
+  <header style="display:flex;flex-direction:column;gap:14px">
+    <span class="eyebrow">PINX test case · Oracle 19c · PDB1 on dbmint · 5 Nov 2026</span>
+    <h1>Test run of 5 November 2026: five scripts</h1>
+    <p class="lede">Execution order of the five scripts, the command entered for each, and the screen output. Background and measurements: <code>docs/guide.html</code>.</p>
+    <div class="actors" aria-label="Who runs each step">
+      <span class="chip dba">as a DBA</span>
+      <span class="chip sql">as the test user PINX</span>
+      <span class="chip job">background jobs in the database</span>
+      <span class="chip file">files written</span>
+    </div>
+  </header>
+
+  <h2>Script overview</h2>
+  <figure class="dgm">
+    <div class="scroll"><svg class="dg" viewBox="0 0 1060 404" role="img" aria-label="Five scripts run in order: 1_build.sh creates the user, objects and table; 2_start_workers.sh starts 24 worker jobs that keep running; 3_test_drop.sh and 4_test_exchange.sh each run one measured test against those workers and write reports; 5_cleanup.sh stops the workers and drops the user."><text x="15" y="22" class="b">you run, in this order</text>
+<line x1="175" y1="18" x2="1040" y2="18" class="ln"/><polygon points="1039,14 1039,22 1046,18" class="ah"/>
+<text x="1045" y="36" text-anchor="end" class="sm mut">time</text>
+<rect x="15" y="46" width="190" height="50" rx="6" class="box"/>
+<text x="110.0" y="67.0" text-anchor="middle" class="mono b">1_build.sh</text>
+<text x="110.0" y="83.0" text-anchor="middle" class="sm mut">step 1 · DBA, then PINX</text>
+<rect x="225" y="46" width="190" height="50" rx="6" class="box-keep"/>
+<text x="320.0" y="67.0" text-anchor="middle" class="mono b">2_start_workers.sh</text>
+<text x="320.0" y="83.0" text-anchor="middle" class="sm mut">step 2 · PINX</text>
+<rect x="435" y="46" width="190" height="50" rx="6" class="box-drop"/>
+<text x="530.0" y="67.0" text-anchor="middle" class="mono b">3_test_drop.sh</text>
+<text x="530.0" y="83.0" text-anchor="middle" class="sm mut">step 3 · PINX</text>
+<rect x="645" y="46" width="190" height="50" rx="6" class="box-keep"/>
+<text x="740.0" y="67.0" text-anchor="middle" class="mono b">4_test_exchange.sh</text>
+<text x="740.0" y="83.0" text-anchor="middle" class="sm mut">step 4 · PINX</text>
+<rect x="855" y="46" width="190" height="50" rx="6" class="box"/>
+<text x="950.0" y="67.0" text-anchor="middle" class="mono b">5_cleanup.sh</text>
+<text x="950.0" y="83.0" text-anchor="middle" class="sm mut">step 5 · DBA</text>
+<line x1="110.0" y1="96" x2="110.0" y2="126" class="ln"/><polygon points="106.0,125 114.0,125 110.0,132" class="ah"/><text x="117.0" y="118.0" class="mono sm mut">as DBA</text>
+<rect x="15" y="132" width="190" height="44" rx="6" class="sunk"/>
+<text x="110.0" y="150.0" text-anchor="middle" class="mono">admin/create_user.sql</text>
+<text x="110.0" y="166.0" text-anchor="middle" class="sm mut">user PINX + grants</text>
+<line x1="110.0" y1="176" x2="110.0" y2="196" class="ln"/><polygon points="106.0,195 114.0,195 110.0,202" class="ah"/><text x="117.0" y="193.0" class="mono sm mut">as PINX</text>
+<rect x="15" y="202" width="190" height="44" rx="6" class="sunk"/>
+<text x="110.0" y="220.0" text-anchor="middle" class="mono">build.sql</text>
+<text x="110.0" y="236.0" text-anchor="middle" class="sm mut">preflight.sql, setup.sql</text>
+<line x1="110.0" y1="246" x2="110.0" y2="266" class="ln"/><polygon points="106.0,265 114.0,265 110.0,272" class="ah"/><text x="117.0" y="263.0" class="mono sm mut">exec</text>
+<rect x="15" y="272" width="190" height="44" rx="6" class="box"/>
+<text x="110.0" y="290.0" text-anchor="middle" class="mono">pinx_lab.build_table</text>
+<text x="110.0" y="306.0" text-anchor="middle" class="sm mut">table T, 400 partitions</text>
+<line x1="320.0" y1="96" x2="320.0" y2="126" class="ln"/><polygon points="316.0,125 324.0,125 320.0,132" class="ah"/><text x="327.0" y="118.0" class="mono sm mut">@</text>
+<rect x="225" y="132" width="190" height="44" rx="6" class="sunk"/>
+<text x="320.0" y="158.0" text-anchor="middle" class="mono">start_workers.sql</text>
+<line x1="320.0" y1="176" x2="320.0" y2="196" class="ln"/><polygon points="316.0,195 324.0,195 320.0,202" class="ah"/><text x="327.0" y="193.0" class="mono sm mut">exec</text>
+<rect x="225" y="202" width="190" height="44" rx="6" class="box"/>
+<text x="320.0" y="220.0" text-anchor="middle" class="mono">pinx_lab.start_workers</text>
+<text x="320.0" y="236.0" text-anchor="middle" class="sm mut">creates 24 jobs</text>
+<line x1="320.0" y1="246" x2="320.0" y2="266" class="ln"/><polygon points="316.0,265 324.0,265 320.0,272" class="ah"/><text x="327.0" y="263.0" class="mono sm mut">@@</text>
+<rect x="225" y="272" width="190" height="44" rx="6" class="sunk"/>
+<text x="320.0" y="290.0" text-anchor="middle" class="mono">status.sql</text>
+<text x="320.0" y="306.0" text-anchor="middle" class="sm mut">lists the workers</text>
+<line x1="530.0" y1="96" x2="530.0" y2="126" class="ln"/><polygon points="526.0,125 534.0,125 530.0,132" class="ah"/><text x="537.0" y="118.0" class="mono sm mut">@</text>
+<rect x="435" y="132" width="190" height="44" rx="6" class="sunk"/>
+<text x="530.0" y="158.0" text-anchor="middle" class="mono">test_drop.sql</text>
+<line x1="530.0" y1="176" x2="530.0" y2="196" class="ln"/><polygon points="526.0,195 534.0,195 530.0,202" class="ah"/><text x="537.0" y="193.0" class="mono sm mut">exec</text>
+<rect x="435" y="202" width="190" height="44" rx="6" class="box"/>
+<text x="530.0" y="220.0" text-anchor="middle" class="mono">pinx_lab.run_case</text>
+<text x="530.0" y="236.0" text-anchor="middle" class="mono sm t-drop">('DROP', …)</text>
+<line x1="530.0" y1="246" x2="530.0" y2="266" class="ln"/><polygon points="526.0,265 534.0,265 530.0,272" class="ah"/><text x="537.0" y="263.0" class="mono sm mut">@@</text>
+<rect x="435" y="272" width="190" height="44" rx="6" class="sunk"/>
+<text x="530.0" y="290.0" text-anchor="middle" class="mono">evidence.sql</text>
+<text x="530.0" y="306.0" text-anchor="middle" class="mono">report.sql</text>
+<line x1="740.0" y1="96" x2="740.0" y2="126" class="ln"/><polygon points="736.0,125 744.0,125 740.0,132" class="ah"/><text x="747.0" y="118.0" class="mono sm mut">@</text>
+<rect x="645" y="132" width="190" height="44" rx="6" class="sunk"/>
+<text x="740.0" y="158.0" text-anchor="middle" class="mono">test_exchange.sql</text>
+<line x1="740.0" y1="176" x2="740.0" y2="196" class="ln"/><polygon points="736.0,195 744.0,195 740.0,202" class="ah"/><text x="747.0" y="193.0" class="mono sm mut">exec</text>
+<rect x="645" y="202" width="190" height="44" rx="6" class="box"/>
+<text x="740.0" y="220.0" text-anchor="middle" class="mono">pinx_lab.run_case</text>
+<text x="740.0" y="236.0" text-anchor="middle" class="mono sm t-keep">('EXCHANGE', …)</text>
+<line x1="740.0" y1="246" x2="740.0" y2="266" class="ln"/><polygon points="736.0,265 744.0,265 740.0,272" class="ah"/><text x="747.0" y="263.0" class="mono sm mut">@@</text>
+<rect x="645" y="272" width="190" height="44" rx="6" class="sunk"/>
+<text x="740.0" y="290.0" text-anchor="middle" class="mono">evidence.sql</text>
+<text x="740.0" y="306.0" text-anchor="middle" class="mono">report.sql</text>
+<line x1="950.0" y1="96" x2="950.0" y2="126" class="ln"/><polygon points="946.0,125 954.0,125 950.0,132" class="ah"/><text x="957.0" y="118.0" class="mono sm mut">as DBA</text>
+<rect x="855" y="132" width="190" height="44" rx="6" class="sunk"/>
+<text x="950.0" y="158.0" text-anchor="middle" class="mono">admin/drop_user.sql</text>
+<line x1="950.0" y1="176" x2="950.0" y2="196" class="ln"/><polygon points="946.0,195 954.0,195 950.0,202" class="ah"/>
+<rect x="855" y="202" width="190" height="44" rx="6" class="box"/>
+<text x="950.0" y="220.0" text-anchor="middle" class="sm b">stop the 24 jobs</text>
+<text x="950.0" y="236.0" text-anchor="middle" class="sm mut">flag STOP, wait, drop jobs</text>
+<line x1="950.0" y1="246" x2="950.0" y2="266" class="ln"/><polygon points="946.0,265 954.0,265 950.0,272" class="ah"/>
+<rect x="855" y="272" width="190" height="44" rx="6" class="sunk"/>
+<text x="950.0" y="290.0" text-anchor="middle" class="mono sm">drop user PINX cascade</text>
+<text x="950.0" y="306.0" text-anchor="middle" class="sm mut">everything it owned</text>
+<rect x="225" y="352" width="725.0" height="40" rx="6" class="box-keep"/>
+<text x="587.5" y="370" text-anchor="middle" class="b">24 worker jobs PINX_W001 … PINX_W024</text>
+<text x="587.5" y="386" text-anchor="middle" class="sm mut">execute the hot query from step 2 to step 5</text>
+<line x1="245" y1="316" x2="245" y2="346" class="ln"/><polygon points="241,345 249,345 245,352" class="ah"/>
+<text x="253" y="340" class="sm mut">starts</text>
+<line x1="460.0" y1="316" x2="460.0" y2="352" class="ln dash"/>
+<text x="466.0" y="340" class="sm mut">measured</text>
+<line x1="670.0" y1="316" x2="670.0" y2="352" class="ln dash"/>
+<text x="676.0" y="340" class="sm mut">measured</text>
+<line x1="950.0" y1="316" x2="950.0" y2="352" class="ln-drop" style="stroke-width:2"/>
+<text x="957.0" y="340" class="sm t-drop">stops</text></svg></div>
+    <figcaption><b>Execution order: left to right.</b> Below each script: the SQL scripts and procedures it runs. Step 2 starts 24 worker jobs; they run during steps 3 and 4; step 5 stops them.</figcaption>
+  </figure>
+
+  <h2>Steps</h2>
+  <div class="rail">
+
+    <section class="stop" id="step-1">
+      <div class="mark"><span class="num">1</span></div>
+      <div class="body">
+        <div class="head"><h3><span class="f">1_build.sh</span></h3><span class="when">08:31:54 to 08:32:20 · 26 s</span>
+          <div class="chips"><span class="chip dba">admin/create_user.sql</span><span class="chip sql">build.sql</span><span class="chip sql">preflight.sql</span><span class="chip sql">setup.sql</span></div></div>
+        <p class="say">Creates user <code>PINX</code>, installs the harness objects, builds table <code>T</code>.</p>
+        <div class="pair">
+          <figure class="term you"><figcaption><span>you type</span><span>on the database host</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./1_build.sh</span>
+Password for the test user PINX (new, or the existing one): <span class="ph">&lt;password&gt;</span></pre></figure>
+          <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>======================================================================
+  1/5  Build: user, objects, data    2026-11-05 08:31:54
+======================================================================
+
+---- as DBA: user PINX and its grants
+User PINX created (default tablespace USERS).
+
+Grants in place.
+
+---- as PINX: objects and data
+==== Preflight checks
+  [ ok ] Oracle 19c
+  [ ok ] Schema PINX
+  [ ok ] Container PDB1
+<span class="el">  …</span>
+  All preflight checks passed.
+
+==== Installing harness objects
+Harness installed.
+
+==== Building the data
+08:32:02  building table T (400 partitions, 400000 rows) and T_X
+08:32:20  table T ready: 400 partitions; T_X ready for the exchange
+
+<span class="ok">Step 1 done. Next: ./2_start_workers.sh</span></pre></figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="stop keep" id="step-2">
+      <div class="mark"><span class="num">2</span></div>
+      <div class="body">
+        <div class="head"><h3><span class="f">2_start_workers.sh</span></h3><span class="when">08:32:37 · workers running from 08:32:41</span>
+          <div class="chips"><span class="chip sql">start_workers.sql</span><span class="chip job">PINX_W001 … PINX_W024</span><span class="chip sql">status.sql</span></div></div>
+        <p class="say">Starts 24 scheduler jobs that execute the hot query in a loop. The jobs continue after the script ends. No DDL is issued in this step.</p>
+        <div class="pair">
+          <figure class="term you"><figcaption><span>you type</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./2_start_workers.sh</span></pre></figure>
+          <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>======================================================================
+  2/5  Start the workers    2026-11-05 08:32:37
+======================================================================
+
+==== Starting the workers
+08:32:39  started 24 worker jobs (PINX_W001 to PINX_W024), waiting until each has run the hot query
+08:32:41  all 24 workers are running the hot query (20 ms think time between executions)
+08:32:41  they stop by themselves at 2026-11-05 09:32:39 (60 min), or when ./5_cleanup.sh or stop_workers.sql stops them
+
+==== Workers
+<span class="el">…</span>
+
+<span class="ok">Step 2 done. The workers keep running. Next: ./3_test_drop.sh</span></pre></figure>
+        </div>
+        <p class="say">Worker status, at any later time:</p>
+        <div class="pair">
+          <figure class="term you"><figcaption><span>you type</span><span>optional</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./run.sh status</span></pre></figure>
+          <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>==== Workers
+
+   W JOB        STATE       SID DOING NOW                          HEARTBEAT  EXECUTIONS
+---- ---------- -------- ------ ---------------------------------- ---------- ----------
+   1 PINX_W001  running     310 think time (PL/SQL lock timer)     2 s ago          1077
+   2 PINX_W002  running      15 think time (PL/SQL lock timer)     2 s ago          1072
+   3 PINX_W003  running     303 think time (PL/SQL lock timer)     2 s ago          1075
+<span class="el">…</span>
+  24 PINX_W024  running      43 think time (PL/SQL lock timer)     2 s ago          1075
+
+24 of 24 workers running, 20 ms think time after each execution.
+No test is running: the workers just run the hot query.
+They stop by themselves at 2026-11-05 09:32:39.
+Hot query (sql_id 5wrhf4jjs6mhs): about 1179 executions per second, all workers together (measured over 5 s).
+Its cursor in V$SQL: 1 child cursor(s), 1 loads, 0 invalidations so far.</pre></figure>
+        </div>
+      </div>
+    </section>
+
+    <figure class="dgm" style="margin:0 0 40px 82px">
+      <div class="scroll"><svg class="dg" viewBox="0 0 1050 252" role="img" aria-label="Steps 2 to 4 on one clock, 08:32:30 to 08:36:30 on 5 Nov 2026. The workers start in step 2 and keep running. Each test lets them settle, takes an AWR snapshot, runs 10 DDL statements over 60 seconds and takes another AWR snapshot."><text x="0" y="28" class="b">you run</text><text x="0" y="44" class="sm mut">shell script</text>
+<text x="0" y="88" class="b">controller</text><text x="0" y="104" class="sm mut">pinx_lab session</text>
+<text x="0" y="146" class="b">24 worker jobs</text><text x="0" y="162" class="sm mut">pinx_hot_loop</text>
+<text x="0" y="205" class="b">AWR snapshot</text>
+<line x1="261.2" y1="14" x2="261.2" y2="224" class="grid"/>
+<text x="261.2" y="242" text-anchor="middle" class="mono sm mut">08:33:00</text>
+<line x1="372.5" y1="14" x2="372.5" y2="224" class="grid"/>
+<text x="372.5" y="242" text-anchor="middle" class="mono sm mut">08:33:30</text>
+<line x1="483.8" y1="14" x2="483.8" y2="224" class="grid"/>
+<text x="483.8" y="242" text-anchor="middle" class="mono sm mut">08:34:00</text>
+<line x1="595.0" y1="14" x2="595.0" y2="224" class="grid"/>
+<text x="595.0" y="242" text-anchor="middle" class="mono sm mut">08:34:30</text>
+<line x1="706.2" y1="14" x2="706.2" y2="224" class="grid"/>
+<text x="706.2" y="242" text-anchor="middle" class="mono sm mut">08:35:00</text>
+<line x1="817.5" y1="14" x2="817.5" y2="224" class="grid"/>
+<text x="817.5" y="242" text-anchor="middle" class="mono sm mut">08:35:30</text>
+<line x1="928.8" y1="14" x2="928.8" y2="224" class="grid"/>
+<text x="928.8" y="242" text-anchor="middle" class="mono sm mut">08:36:00</text>
+<rect x="183.4" y="14" width="7.4" height="26" rx="3" class="box"/>
+<text x="183.4" y="58" class="mono sm">2_start_workers.sh</text>
+<rect x="339.1" y="14" width="281.8" height="26" rx="3" class="box-drop"/><text x="480.0" y="31.0" text-anchor="middle" class="mono sm b">3_test_drop.sh</text>
+<rect x="702.5" y="14" width="270.7" height="26" rx="3" class="box-keep"/><text x="837.9" y="31.0" text-anchor="middle" class="mono sm b">4_test_exchange.sh</text>
+<rect x="339.1" y="74" width="51.9" height="34" rx="3" class="sunk"/><text x="365.1" y="95.0" text-anchor="middle" class="sm">settle</text>
+<rect x="394.8" y="74" width="222.5" height="34" rx="3" class="box-drop"/>
+<line x1="413.3" y1="77" x2="413.3" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="435.5" y1="77" x2="435.5" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="454.1" y1="77" x2="454.1" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="476.3" y1="77" x2="476.3" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="494.9" y1="77" x2="494.9" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="517.1" y1="77" x2="517.1" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="535.7" y1="77" x2="535.7" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="557.9" y1="77" x2="557.9" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="576.5" y1="77" x2="576.5" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="598.7" y1="77" x2="598.7" y2="105" class="ln-drop" style="stroke-width:3"/>
+<text x="397.8" y="68" class="sm t-drop">10 × DROP PARTITION</text>
+<rect x="702.5" y="74" width="40.8" height="34" rx="3" class="sunk"/><text x="722.9" y="95.0" text-anchor="middle" class="sm">settle</text>
+<rect x="747.0" y="74" width="222.5" height="34" rx="3" class="box-keep"/>
+<line x1="765.6" y1="77" x2="765.6" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="787.8" y1="77" x2="787.8" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="806.4" y1="77" x2="806.4" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="828.6" y1="77" x2="828.6" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="847.2" y1="77" x2="847.2" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="869.4" y1="77" x2="869.4" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="888.0" y1="77" x2="888.0" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="910.2" y1="77" x2="910.2" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="928.8" y1="77" x2="928.8" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="947.3" y1="77" x2="947.3" y2="105" class="ln-keep" style="stroke-width:3"/>
+<text x="750.0" y="68" class="sm t-keep">10 × EXCHANGE PARTITION</text>
+<rect x="190.8" y="132" width="834.4" height="34" rx="3" class="sunk"/>
+<polygon points="1024.0,132 1040.0,149 1024.0,166" class="fill-mut"/>
+<text x="292.8" y="153" text-anchor="middle" class="sm">hot query</text>
+<rect x="394.8" y="132" width="222.5" height="34" rx="3" class="box-drop"/><text x="506.0" y="153.0" text-anchor="middle" class="sm t-drop">waits after each DDL</text>
+<text x="682.1" y="153" text-anchor="middle" class="sm">hot query</text>
+<rect x="747.0" y="132" width="222.5" height="34" rx="3" class="box-keep"/><text x="858.3" y="153.0" text-anchor="middle" class="sm t-keep">no waits</text>
+<polygon points="391.0,190 398.0,199 391.0,208 384.0,199" class="fill-ink"/>
+<text x="401.0" y="204" class="mono sm">38</text>
+<polygon points="621.0,190 628.0,199 621.0,208 614.0,199" class="fill-ink"/>
+<text x="631.0" y="204" class="mono sm">39</text>
+<polygon points="743.3,190 750.3,199 743.3,208 736.3,199" class="fill-ink"/>
+<text x="753.3" y="204" class="mono sm">40</text>
+<polygon points="969.5,190 976.5,199 969.5,208 962.5,199" class="fill-ink"/>
+<text x="979.5" y="204" class="mono sm">41</text></svg></div>
+      <figcaption><b>Steps 2 to 4, to scale</b>, from the timestamps in the script output. Tick: one DDL statement. Diamond: AWR snapshot, with snapshot ID.</figcaption>
+    </figure>
+
+    <section class="stop drop" id="step-3">
+      <div class="mark"><span class="num">3</span></div>
+      <div class="body">
+        <div class="head"><h3><span class="f">3_test_drop.sh</span></h3><span class="when">08:33:18 · test done 08:34:37</span>
+          <div class="chips"><span class="chip sql">test_drop.sql</span><span class="chip sql">pinx_lab.run_case('DROP')</span><span class="chip sql">evidence.sql</span><span class="chip sql">report.sql</span><span class="chip file">reports/</span></div></div>
+        <p class="say">DROP test: 10 <code>DROP PARTITION</code> statements, one every 5.5 s, with the workers running.</p>
+        <div class="pair">
+          <figure class="term you"><figcaption><span>you type</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./3_test_drop.sh</span></pre></figure>
+          <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>======================================================================
+  3/5  Test: DROP PARTITION under load    2026-11-05 08:33:18
+======================================================================
+
+==== DROP PARTITION test (about 10 + 60 s)
+08:33:21  ---- DROP test: 24 workers already running, 400 partitions, 2000 ms per hard parse, 10 DDLs over 60 s (+10 s settle)
+08:33:21  workers settling for 10 s
+08:33:35  AWR snapshot 38 (before)
+08:33:36  window open (hot cursor sql_id 5wrhf4jjs6mhs)
+08:33:41  DDL 1/10 (76.1 ms): alter table t drop partition p400 update indexes
+08:33:47  DDL 2/10 (66.2 ms): alter table t drop partition p399 update indexes
+08:33:52  DDL 3/10 (38.1 ms): alter table t drop partition p398 update indexes
+08:33:58  DDL 4/10 (30.4 ms): alter table t drop partition p397 update indexes
+08:34:03  DDL 5/10 (33.4 ms): alter table t drop partition p396 update indexes
+08:34:09  DDL 6/10 (29.5 ms): alter table t drop partition p395 update indexes
+08:34:14  DDL 7/10 (31.8 ms): alter table t drop partition p394 update indexes
+08:34:20  DDL 8/10 (34 ms): alter table t drop partition p393 update indexes
+08:34:25  DDL 9/10 (31.9 ms): alter table t drop partition p392 update indexes
+08:34:31  DDL 10/10 (39.8 ms): alter table t drop partition p391 update indexes
+08:34:36  window closed
+08:34:37  AWR snapshot 39 (after)
+08:34:37  ASH: 3 events captured
+08:34:37  DROP test run 1 complete; the workers keep running
+
+==== Writing evidence to reports/
+reports/pinx_timeline_r1.html   (open this one)
+reports/pinx_run1_drop_ash.html   (Oracle ASH report, 2026-11-05 08:33:36 to 2026-11-05 08:34:37)
+reports/pinx_run1_drop_awr.html   (Oracle AWR report, snapshots 38 to 39)
+
+==== Metrics (window only: after warm-up, until the quiet tail ends)
+
+Metric                                                        A: DROP          B: EXCHANGE
+------------------------------------------------ -------------------- --------------------
+Hot cursor: DDLs that invalidated it                         10 of 10                    -
+Workers: executions per second                                    797                    -
+Workers: waits on cursor: pin S wait on X                         230                    -
+Workers: time in cursor: pin S wait on X (ms)                  459529                    -
+<span class="el">…</span>
+
+==== Checks
+
+KIND     Check                                Expected   Actual     Result
+-------- ------------------------------------ ---------- ---------- ------
+DROP     DDLs that invalidated the hot cursor 10         10         PASS  
+DROP     Waits on cursor: pin S wait on X     &gt; 0        230        PASS  
+<span class="el">…</span>
+
+<span class="ok">OVERALL: PASS (8 checks) - DROP test only so far; run ./4_test_exchange.sh to compare</span>
+
+<span class="ok">Step 3 done. The workers keep running. Next: ./4_test_exchange.sh</span></pre></figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="stop keep" id="step-4">
+      <div class="mark"><span class="num">4</span></div>
+      <div class="body">
+        <div class="head"><h3><span class="f">4_test_exchange.sh</span></h3><span class="when">08:34:56 · test done 08:36:12</span>
+          <div class="chips"><span class="chip sql">test_exchange.sql</span><span class="chip sql">pinx_lab.run_case('EXCHANGE')</span><span class="chip sql">evidence.sql</span><span class="chip sql">report.sql</span><span class="chip file">reports/</span></div></div>
+        <p class="say">EXCHANGE test: 10 <code>EXCHANGE PARTITION</code> statements (highest partition with <code>T_X</code>), one every 5.5 s, with the same workers running. The report lists both tests.</p>
+        <div class="pair">
+          <figure class="term you"><figcaption><span>you type</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./4_test_exchange.sh</span></pre></figure>
+          <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>======================================================================
+  4/5  Test: EXCHANGE PARTITION under load    2026-11-05 08:34:56
+======================================================================
+
+==== EXCHANGE PARTITION test (about 10 + 60 s)
+08:34:59  ---- EXCHANGE test: 24 workers already running, 390 partitions, 2000 ms per hard parse, 10 DDLs over 60 s (+10 s settle)
+08:34:59  workers settling for 10 s
+08:35:10  AWR snapshot 40 (before)
+08:35:11  window open (hot cursor sql_id 5wrhf4jjs6mhs)
+08:35:16  DDL 1/10 (35.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:22  DDL 2/10 (11.6 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:27  DDL 3/10 (10.4 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:33  DDL 4/10 (13.3 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:38  DDL 5/10 (9.9 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:44  DDL 6/10 (11.6 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:49  DDL 7/10 (9.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:55  DDL 8/10 (10.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:36:00  DDL 9/10 (13.1 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:36:05  DDL 10/10 (14.4 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:36:11  window closed
+08:36:11  AWR snapshot 41 (after)
+08:36:12  ASH: 1 events captured
+08:36:12  EXCHANGE test run 2 complete; the workers keep running
+
+==== Writing evidence to reports/
+reports/pinx_timeline_r1_r2.html   (open this one)
+reports/pinx_run1_drop_ash.html   (Oracle ASH report, 2026-11-05 08:33:36 to 2026-11-05 08:34:37)
+reports/pinx_run1_drop_awr.html   (Oracle AWR report, snapshots 38 to 39)
+reports/pinx_run2_exchange_ash.html   (Oracle ASH report, 2026-11-05 08:35:11 to 2026-11-05 08:36:12)
+reports/pinx_run2_exchange_awr.html   (Oracle AWR report, snapshots 40 to 41)
+
+==== Metrics (window only: after warm-up, until the quiet tail ends)
+
+Metric                                                        A: DROP          B: EXCHANGE
+------------------------------------------------ -------------------- --------------------
+Hot cursor: DDLs that invalidated it                         10 of 10              0 of 10
+Workers: executions per second                                    797                 1176
+Workers: waits on cursor: pin S wait on X                         230                    0
+Workers: time in cursor: pin S wait on X (ms)                  459529                    0
+<span class="el">…</span>
+
+==== Checks
+
+KIND     Check                                Expected   Actual     Result
+-------- ------------------------------------ ---------- ---------- ------
+DROP     DDLs that invalidated the hot cursor 10         10         PASS  
+EXCHANGE DDLs that invalidated the hot cursor 0          0          PASS  
+EXCHANGE Waits on cursor: pin S wait on X     0          0          PASS  
+<span class="el">…</span>
+
+<span class="ok">OVERALL: PASS (17 checks)</span>
+
+<span class="ok">Step 4 done. The workers keep running. Next: ./5_cleanup.sh</span></pre></figure>
+        </div>
+        <div class="files">
+          <div class="fileitem main"><code>reports/pinx_timeline_r1_r2.html</code><span>ASH timeline of both tests, with each DDL marked</span></div>
+          <div class="fileitem"><code>reports/pinx_run1_drop_ash.html</code><span>Oracle ASH report, DROP test window</span></div>
+          <div class="fileitem"><code>reports/pinx_run1_drop_awr.html</code><span>Oracle AWR report, snapshots 38 and 39</span></div>
+          <div class="fileitem"><code>reports/pinx_run2_exchange_ash.html</code><span>Oracle ASH report, EXCHANGE test window</span></div>
+          <div class="fileitem"><code>reports/pinx_run2_exchange_awr.html</code><span>Oracle AWR report, snapshots 40 and 41</span></div>
+          <div class="fileitem"><code>logs/</code><span>One log file per script, containing the screen output</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="stop" id="step-5">
+      <div class="mark"><span class="num">5</span></div>
+      <div class="body">
+        <div class="head"><h3><span class="f">5_cleanup.sh</span></h3><span class="when">08:38:10 · 13 s</span>
+          <div class="chips"><span class="chip dba">admin/drop_user.sql</span></div></div>
+        <p class="say">Stops the worker jobs and drops user <code>PINX</code> with all its objects. <code>reports/</code> and <code>logs/</code> are not changed.</p>
+        <div class="pair">
+          <figure class="term you"><figcaption><span>you type</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./5_cleanup.sh</span></pre></figure>
+          <figure class="term"><figcaption><span>screen</span></figcaption><pre>======================================================================
+  5/5  Clean up: workers, user PINX and everything it owns    2026-11-05 08:38:10
+======================================================================
+
+Stopping 24 running worker jobs.
+User PINX dropped, with everything it owned.
+
+<span class="ok">Step 5 done. Your reports are still in reports/.</span></pre></figure>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <span>Screen output: run of 5 Nov 2026, SQLcl. Omitted from step 1: two lines ("Session altered." and "SQL Format Cleared") that the current scripts no longer print. Omitted from step 2: the worker table; its executions-per-second line had a bug, corrected before the <code>./run.sh status</code> shown below it. Step 5 ran at 08:38:10, after additional tests of restarting the workers and rebuilding the table. <i>&lt;password&gt;</i> replaces the actual value; “…” marks omitted lines.</span>
+    <span>Connections: <code>connection.conf</code> with <code>PINX_SERVICE=//localhost:1521/pdb1.world</code>, <code>DBA_CONNECT='/ as sysdba'</code>, <code>DBA_CONTAINER=PDB1</code>. Settings: <code>config.sql</code> with 400 partitions, 24 workers, 20 ms think time, 10 DDLs over 60 s, 10 s settle, 2000 ms per hard parse, <code>AWR = AUTO</code>.</span>
+  </footer>
+</main>

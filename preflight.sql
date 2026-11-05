@@ -69,8 +69,8 @@ begin
   -- 4. Direct grants on the V$ views ---------------------------------
   l_any_dict := has_sys_priv('SELECT ANY DICTIONARY');
   for v in (select column_value vw from table(sys.odcivarchar2list(
-              'V_$SQL', 'V_$SESSION_EVENT', 'V_$MYSTAT', 'V_$STATNAME', 'V_$SYSSTAT',
-              'V_$SYSTEM_EVENT', 'V_$PARAMETER', 'V_$INSTANCE'))) loop
+              'V_$SQL', 'V_$SESSION', 'V_$SESSION_EVENT', 'V_$MYSTAT', 'V_$STATNAME',
+              'V_$SYSSTAT', 'V_$SYSTEM_EVENT', 'V_$PARAMETER', 'V_$INSTANCE'))) loop
     select count(*) into l_cnt from user_tab_privs
     where  owner = 'SYS' and table_name = v.vw and privilege = 'SELECT';
     if l_cnt > 0 or l_any_dict then ok('Can read '||replace(v.vw, 'V_$', 'V$'));
@@ -143,6 +143,7 @@ begin
   if &NJOBS < 2 or &NJOBS > 200 then bad('NJOBS must be between 2 and 200.'); end if;
   if &SECS < 10 then bad('SECS must be at least 10.'); end if;
   if &WARMUP < 3 then bad('WARMUP must be at least 3.'); end if;
+  if &WORKER_MINUTES < 5 or &WORKER_MINUTES > 1440 then bad('WORKER_MINUTES must be between 5 and 1440.'); end if;
   if &PARSE_MS < 0 or &PARSE_MS > 10000 then bad('PARSE_MS must be between 0 and 10000.'); end if;
   if &PARSE_MS * 1.5 > &SECS * 1000 / (&NDDL + 1) then
     warn('PARSE_MS is long compared with the gap between DDLs (SECS / (NDDL+1)); pile-ups may overlap.');
@@ -156,7 +157,7 @@ begin
   -- 8. Space ---------------------------------------------------------------
   -- T + local index + T_X: roughly 400 bytes per row incl. extent overhead,
   -- 1000 rows per partition. Space held by an existing T / T_X counts as
-  -- free, because every run drops and rebuilds them.
+  -- free, because the build drops and rebuilds them.
   select count(*) into l_cnt
   from   user_ts_quotas q, user_users u
   where  q.tablespace_name = u.default_tablespace

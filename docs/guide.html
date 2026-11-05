@@ -1,4 +1,4 @@
-<title>Exchange, Don't Drop</title>
+<title>DROP vs EXCHANGE PARTITION</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8">
@@ -103,6 +103,7 @@ figcaption b{color:var(--ink);font-weight:600}
 .dg .ln-keep{stroke:var(--keep);stroke-width:1.6;fill:none}
 .dg .dash{stroke-dasharray:5 4}
 .dg .grid{stroke:var(--line);stroke-width:1}
+.dg .fill-ink{fill:var(--ink)}
 .dg .ah{fill:var(--line-strong)} .dg .ah-ink{fill:var(--ink)} .dg .ah-drop{fill:var(--drop)} .dg .ah-keep{fill:var(--keep)}
 
 /* production steps (an HTML flow diagram) */
@@ -162,55 +163,55 @@ footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);font-si
 <main class="page">
 
 <header style="display:flex;flex-direction:column;gap:16px">
-  <span class="eyebrow">Oracle 19c · partition maintenance on a busy table</span>
-  <h1>Exchange, don't drop</h1>
-  <p class="lede">Dropping a partition that no running query touches still invalidates every cursor on the table. When many sessions share that cursor, they all stall while one of them rebuilds it. <code>EXCHANGE PARTITION</code> removes the same data without disturbing them. This guide shows the mechanism, the test that measured it on a real 19c database, and every script that ran.</p>
+  <span class="eyebrow">Oracle 19c · partition DDL under concurrent load</span>
+  <h1>DROP PARTITION and EXCHANGE PARTITION under concurrent load</h1>
+  <p class="lede">On Oracle 19c, <code>ALTER TABLE … DROP PARTITION</code> invalidates every cursor that depends on the table, including cursors that do not read the dropped partition. <code>ALTER TABLE … EXCHANGE PARTITION</code> does not invalidate cursors that do not read the exchanged partition. This page documents a test of both statements with 24 concurrent sessions: setup, measurements and scripts.</p>
 </header>
 
 <div class="ledger" role="table" aria-label="Measured results, DROP compared with EXCHANGE">
   <div class="hd" role="columnheader">Measured in one 60-second window, 10 DDL statements</div>
-  <div class="hd drop" role="columnheader">Run A · DROP</div>
-  <div class="hd keep" role="columnheader">Run B · EXCHANGE</div>
+  <div class="hd drop" role="columnheader">Step 3 · DROP test</div>
+  <div class="hd keep" role="columnheader">Step 4 · EXCHANGE test</div>
 
   <div class="lab" role="rowheader">DDL statements that invalidated the hot cursor</div>
   <div class="num drop">10 of 10</div>
   <div class="num keep">0 of 10</div>
 
   <div class="lab" role="rowheader">Database time (AWR)</div>
-  <div class="num drop">510 s<small>8.4 sessions busy on average</small></div>
-  <div class="num keep">39 s<small>0.64 sessions busy on average</small></div>
+  <div class="num drop">521 s<small>8.0 average active sessions</small></div>
+  <div class="num keep">46 s<small>0.75 average active sessions</small></div>
 
   <div class="lab" role="rowheader">Waiting on <code>cursor: pin S wait on X</code></div>
-  <div class="num drop">460.5 s<small>90.2% of DB time</small></div>
+  <div class="num drop">459.9 s<small>88.2% of DB time</small></div>
   <div class="num keep">0 s<small>not in the event list</small></div>
 
   <div class="lab" role="rowheader">Hot query executions per second</div>
-  <div class="num drop">793</div>
-  <div class="num keep">1,177</div>
+  <div class="num drop">797</div>
+  <div class="num keep">1,176</div>
 
   <div class="lab" role="rowheader">Elapsed time of the DDL statement itself</div>
-  <div class="num">17–33 ms</div>
-  <div class="num">7–11 ms</div>
+  <div class="num">30–76 ms</div>
+  <div class="num">10–36 ms</div>
 </div>
-<p class="note">Oracle 19.27.0.0.0, pluggable database PDB1, 2 CPUs. 24 sessions ran the same query against a 400-partition table. The last row is the point: both statements finish in milliseconds. The DROP's cost lands on everyone else.</p>
+<p class="note">Oracle 19.27.0.0.0, pluggable database PDB1, 2 CPUs, 5 November 2026. Both tests used the same 24 sessions, the same query and the same 400-partition table. Last row: elapsed time of the DDL statement in the session that issued it.</p>
 
 <nav class="toc" aria-label="Contents">
-  <a href="#setup">The setup</a>
-  <a href="#drop">What DROP does</a>
-  <a href="#exchange">What EXCHANGE does</a>
-  <a href="#production">Using it in production</a>
-  <a href="#harness">How the test works</a>
-  <a href="#visible">Making the pile-up visible</a>
+  <a href="#setup">Test setup</a>
+  <a href="#drop">DROP PARTITION</a>
+  <a href="#exchange">EXCHANGE PARTITION</a>
+  <a href="#production">Production sequence</a>
+  <a href="#harness">Test harness</a>
+  <a href="#visible">ASH sampling</a>
   <a href="#results">Measurements</a>
-  <a href="#scripts">The scripts</a>
-  <a href="#run">Run it yourself</a>
-  <a href="#caveats">Limits</a>
+  <a href="#scripts">Scripts</a>
+  <a href="#run">Procedure</a>
+  <a href="#caveats">Limitations</a>
 </nav>
 
 <!-- ================================================================ -->
-<h2 id="setup">The setup</h2>
-<p>Table <code>T</code> has 400 range partitions of 1,000 rows each. Twenty-four sessions run one query over and over. The query reads only partition <code>P1</code>: its predicate <code>id &lt; 1000</code> lets the optimizer prune to that one partition when it builds the plan.</p>
-<p>All 24 sessions share a single cursor in the library cache. That is normal and efficient: the statement is parsed once and executed thousands of times. A second session handles maintenance and removes the oldest data, in partition <code>P400</code>.</p>
+<h2 id="setup">Test setup</h2>
+<p>Table <code>T</code>: 400 range partitions, 1,000 rows each. 24 sessions execute one query in a loop. The query reads only partition <code>P1</code>; the predicate <code>id &lt; 1000</code> allows static partition pruning to <code>P1</code>.</p>
+<p>The 24 sessions share one cursor in the library cache: one hard parse, then repeated executions. A separate session issues the DDL against partition <code>P400</code>.</p>
 
 <figure class="diagram">
   <div class="scroll">
@@ -261,16 +262,16 @@ footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);font-si
     <text x="550" y="300" text-anchor="middle" class="sm mut">dependency: the cursor depends on table T as a whole</text>
   </svg>
   </div>
-  <figcaption><b>The query never touches P400.</b> The only thing that connects the maintenance DDL to the shared cursor is the cursor's dependency on table <code>T</code>. What happens next depends on how Oracle handles that dependency for each kind of DDL.</figcaption>
+  <figcaption><b>The query does not read P400.</b> The DDL and the cursor are connected only through the cursor's dependency on table <code>T</code>.</figcaption>
 </figure>
 
 <!-- ================================================================ -->
-<h2 id="drop">What a DROP does to a hot cursor</h2>
-<p>On 19c, <code>ALTER TABLE t DROP PARTITION p400 UPDATE INDEXES</code> invalidates the shared cursor, even though the cursor never reads P400. The DDL itself is quick: 17 to 33 ms in the test. The trouble starts at the next execution.</p>
+<h2 id="drop">DROP PARTITION</h2>
+<p>On 19c, <code>ALTER TABLE t DROP PARTITION p400 UPDATE INDEXES</code> invalidates the shared cursor, although the cursor does not read P400. Elapsed time of the DDL in the test: 30 to 76 ms.</p>
 <ul>
-  <li>The first session to execute finds the cursor invalid and starts a hard parse. While it builds the new cursor it holds the cursor's pin in exclusive (X) mode.</li>
-  <li>Every other session needs the same cursor. Each one requests the pin in shared (S) mode, cannot get it, and waits on <code>cursor: pin S wait on X</code>.</li>
-  <li>Nobody runs the query until the hard parse finishes. Then the cursor is valid again and everyone continues.</li>
+  <li>The next session that executes the query finds the cursor invalid and hard-parses it. During the hard parse it holds the cursor pin in exclusive (X) mode.</li>
+  <li>The other sessions request the pin in shared (S) mode and wait on <code>cursor: pin S wait on X</code>.</li>
+  <li>When the hard parse completes, the cursor is valid and the waiting sessions continue.</li>
 </ul>
 
 <figure class="diagram">
@@ -292,7 +293,7 @@ footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);font-si
 
     <!-- maintenance -->
     <rect class="fill-drop" x="258" y="48" width="6" height="24"/>
-    <text x="272" y="65" class="mono sm">DROP PARTITION p400 · 24 ms</text>
+    <text x="272" y="65" class="mono sm">DROP PARTITION p400 · 41 ms</text>
 
     <!-- W01: executions, then hard parse -->
     <g class="fill-keep">
@@ -331,15 +332,15 @@ footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);font-si
     <text x="176" y="102" class="sm mut">executions</text>
   </svg>
   </div>
-  <figcaption><b>One DROP, one pile-up.</b> The DDL takes 24 ms. The cursor then stays unusable for as long as the hard parse takes, and every session that needs it waits. In the test, AWR measured an average wait of 1.72 s, and ASH saw 23 sessions waiting after each of the 10 drops.</figcaption>
+  <figcaption><b>Sequence after one DROP.</b> DDL elapsed time: about 41 ms. The cursor is unavailable for the duration of the hard parse. Test values: average wait 1.69 s (AWR); 23 sessions waiting after each of the 10 drops (ASH).</figcaption>
 </figure>
 
-<p>The pile-up lasts as long as one hard parse. In the test, each hard parse was set to cost 2 seconds of CPU, roughly what a complex production statement can cost (<a href="#visible">why the test does that</a>). With a cheap statement the pile-up is shorter, but it still happens on every drop and for every cursor that depends on the table.</p>
+<p>The wait lasts as long as one hard parse. In the test, each hard parse was set to 2 s of CPU (<a href="#visible"><code>PARSE_MS</code></a>). With a shorter hard parse the wait is shorter; it still occurs after every DROP, for every cursor that depends on the table.</p>
 
 <!-- ================================================================ -->
-<h2 id="exchange">What EXCHANGE does instead</h2>
-<p><code>ALTER TABLE t EXCHANGE PARTITION p400 WITH TABLE t_x INCLUDING INDEXES WITHOUT VALIDATION</code> swaps the storage of partition P400 with the storage of an ordinary table <code>T_X</code> that has the same shape. No rows are copied. Oracle changes which segment each name points to in the data dictionary.</p>
-<p>Since 12.2, Oracle checks whether a cursor is really affected by this kind of DDL (fine-grained cursor invalidation). The hot cursor reads only P1, so it stays valid. <code>V$SQL.DDL_NO_INVALIDATE</code> records this: <code>X</code> means a DDL changed a dependent object without invalidating the cursor, and the cursor has executed since.</p>
+<h2 id="exchange">EXCHANGE PARTITION</h2>
+<p><code>ALTER TABLE t EXCHANGE PARTITION p400 WITH TABLE t_x INCLUDING INDEXES WITHOUT VALIDATION</code> swaps the segment of partition P400 with the segment of table <code>T_X</code>, which has the same columns and indexes. No rows are copied. The data dictionary is updated so that each name points to the other segment.</p>
+<p>Since 12.2, Oracle determines for each dependent cursor whether this DDL affects it (fine-grained cursor invalidation). The hot cursor reads only P1 and is not invalidated. <code>V$SQL.DDL_NO_INVALIDATE</code> = <code>X</code>: a DDL changed a dependent object without invalidating the cursor, and the cursor has executed since.</p>
 
 <figure class="diagram">
   <div class="scroll">
@@ -377,22 +378,22 @@ footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);font-si
     <text x="725" y="268" text-anchor="middle" class="sm t-keep">hot cursor (reads P1): still valid · DDL_NO_INVALIDATE = X</text>
   </svg>
   </div>
-  <figcaption><b>Only metadata moves.</b> The rows that were in P400 now belong to <code>T_X</code>, and P400 is empty. The exchange took 7 to 11 ms, and none of the 10 exchanges in the test invalidated the hot cursor.</figcaption>
+  <figcaption><b>The exchange changes only the dictionary.</b> After the exchange, the former rows of P400 are in <code>T_X</code> and P400 is empty. Test values: 10 to 36 ms per exchange; 0 of 10 exchanges invalidated the hot cursor.</figcaption>
 </figure>
 
 <!-- ================================================================ -->
-<h2 id="production">Using it in production</h2>
-<p>To age out a partition on a busy table, swap it out first and dispose of the data separately. Nothing hot depends on the standalone table, so dropping it later disturbs nobody.</p>
+<h2 id="production">Production sequence</h2>
+<p>Sequence for removing a partition's data from a table under load: exchange the partition with an empty table, then drop or archive that table. No cursor on <code>T</code> depends on the standalone table.</p>
 
 <figure class="diagram">
   <div class="steps">
     <div class="step">
       <span class="k">Step 1 · prepare</span>
-      <h4>Empty twin table</h4>
+      <h4>Create an empty table</h4>
 <pre>create table t_x
   for exchange with table t;
 create index t_x_grp on t_x (grp);</pre>
-      <p>Same columns and a matching index for every local index on T.</p>
+      <p>Same columns as T; one index for each local index on T.</p>
     </div>
     <div class="step keep">
       <span class="k">Step 2 · swap</span>
@@ -402,28 +403,35 @@ create index t_x_grp on t_x (grp);</pre>
   with table t_x
   including indexes
   without validation;</pre>
-      <p>Measured: 7–11 ms, no cursor invalidated, no waits.</p>
+      <p>Test: 10–36 ms, 0 cursors invalidated, 0 waits.</p>
     </div>
     <div class="step">
       <span class="k">Step 3 · dispose</span>
       <h4>Drop or archive T_X</h4>
 <pre>drop table t_x purge;</pre>
-      <p>Any time. The hot query does not depend on <code>T_X</code>.</p>
+      <p>No cursor on T depends on <code>T_X</code>.</p>
     </div>
     <div class="step optional">
       <span class="k">Step 4 · optional</span>
-      <h4>Remove the empty partition</h4>
+      <h4>Drop the empty partition</h4>
 <pre>alter table t
   drop partition p_old;</pre>
-      <p>This is the statement measured in Run A. Plan it for a quiet window.</p>
+      <p>The statement measured in the DROP test. It invalidates dependent cursors.</p>
     </div>
   </div>
-  <figcaption><b>The low-impact way to age out data.</b> Step 2 is the only one that touches <code>T</code> while it is busy, and it leaves the shared cursors alone. <code>WITHOUT VALIDATION</code> skips checking that the rows fit the partition bounds. That is safe here because the table is empty, and in general only when you know the data fits.</figcaption>
+  <figcaption><b>Step 2 is the only step that changes <code>T</code>.</b> It does not invalidate the shared cursors. <code>WITHOUT VALIDATION</code> skips the check that the rows fit the partition bounds; this is correct here because <code>T_X</code> is empty.</figcaption>
 </figure>
 
 <!-- ================================================================ -->
-<h2 id="harness">How the test works</h2>
-<p>The harness is a set of SQL*Plus/SQLcl scripts and one PL/SQL package, <code>PINX_LAB</code>. One call, <code>pinx_lab.run_case('DROP' | 'EXCHANGE', …)</code>, runs a complete test. The two runs follow exactly the same steps and differ only in the DDL statement.</p>
+<h2 id="harness">Test harness</h2>
+<p>Five shell scripts, executed in order, using SQL*Plus or SQLcl and the PL/SQL package <code>PINX_LAB</code>:</p>
+<ol>
+  <li><code>1_build.sh</code>: creates user <code>PINX</code>, installs the package, builds table T.</li>
+  <li><code>2_start_workers.sh</code>: calls <code>pinx_lab.start_workers</code>, which starts 24 scheduler jobs that execute the hot query in a loop.</li>
+  <li><code>3_test_drop.sh</code>: calls <code>pinx_lab.run_case('DROP', …)</code>, one measured test against the running jobs.</li>
+  <li><code>4_test_exchange.sh</code>: calls <code>pinx_lab.run_case('EXCHANGE', …)</code>, the same procedure with a different DDL statement.</li>
+  <li><code>5_cleanup.sh</code>: stops the jobs, drops the user.</li>
+</ol>
 
 <figure class="diagram">
   <div class="scroll">
@@ -434,24 +442,25 @@ create index t_x_grp on t_x (grp);</pre>
       <marker id="d5k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah-keep" d="M0,0 L10,5 L0,10 z"/></marker>
     </defs>
     <rect class="box" x="20" y="22" width="200" height="56" rx="6"/>
-    <text x="120" y="46" text-anchor="middle" class="mono">run.sh</text>
+    <text x="120" y="46" text-anchor="middle" class="mono">1_build.sh … 5_cleanup.sh</text>
     <text x="120" y="65" text-anchor="middle" class="sm mut">SQL*Plus or SQLcl</text>
     <path class="ln" d="M220,50 L296,50" marker-end="url(#d5a)"/>
 
     <rect class="box" x="300" y="14" width="300" height="72" rx="6"/>
     <text x="450" y="38" text-anchor="middle" class="b">controller session</text>
-    <text x="450" y="58" text-anchor="middle" class="mono">pinx_lab.run_case</text>
+    <text x="450" y="58" text-anchor="middle" class="mono">start_workers · run_case</text>
     <text x="450" y="76" text-anchor="middle" class="sm mut">module PINX_CONTROLLER</text>
 
     <rect class="box" x="680" y="22" width="260" height="56" rx="6"/>
     <text x="810" y="55" text-anchor="middle" class="mono">DBMS_SCHEDULER</text>
     <path class="ln" d="M600,50 L676,50" marker-end="url(#d5a)"/>
-    <text x="640" y="42" text-anchor="middle" class="sm mut">24 jobs</text>
+    <text x="640" y="42" text-anchor="middle" class="sm mut">step 2</text>
 
-    <rect class="box-keep" x="680" y="130" width="260" height="86" rx="6"/>
+    <rect class="box-keep" x="680" y="130" width="260" height="92" rx="6"/>
     <text x="810" y="154" text-anchor="middle" class="b">24 worker jobs</text>
     <text x="810" y="174" text-anchor="middle" class="mono sm">PINX_W001 … PINX_W024</text>
-    <text x="810" y="194" text-anchor="middle" class="sm mut">hot query, then 20 ms pause, repeat</text>
+    <text x="810" y="194" text-anchor="middle" class="sm mut">hot query, 20 ms pause, loop</text>
+    <text x="810" y="210" text-anchor="middle" class="sm mut">from step 2 until step 5</text>
     <path class="ln" d="M810,78 L810,126" marker-end="url(#d5a)"/>
     <text x="818" y="106" class="sm mut">starts</text>
 
@@ -480,66 +489,100 @@ create index t_x_grp on t_x (grp);</pre>
     <path class="ln" d="M580,86 L580,296" marker-end="url(#d5a)"/>
     <text x="574" y="250" text-anchor="end" class="sm mut">V$SQL signatures,</text>
     <text x="574" y="266" text-anchor="end" class="sm mut">ASH copy</text>
-    <path class="ln" d="M760,216 L760,254 L612,254 L612,296" marker-end="url(#d5a)"/>
+    <path class="ln" d="M760,222 L760,254 L612,254 L612,296" marker-end="url(#d5a)"/>
     <text x="686" y="246" text-anchor="middle" class="sm mut">own V$SESSION_EVENT, V$MYSTAT</text>
 
     <rect class="box" x="720" y="300" width="220" height="112" rx="6"/>
     <text x="830" y="324" text-anchor="middle" class="mono">reports/</text>
-    <text x="830" y="350" text-anchor="middle" class="mono sm">timeline (both runs)</text>
-    <text x="830" y="368" text-anchor="middle" class="mono sm">ASH report per run</text>
-    <text x="830" y="386" text-anchor="middle" class="mono sm">AWR report per run</text>
+    <text x="830" y="350" text-anchor="middle" class="mono sm">timeline (both tests)</text>
+    <text x="830" y="368" text-anchor="middle" class="mono sm">ASH report per test</text>
+    <text x="830" y="386" text-anchor="middle" class="mono sm">AWR report per test</text>
     <path class="ln" d="M640,356 L716,356" marker-end="url(#d5a)"/>
     <text x="678" y="348" text-anchor="middle" class="sm mut">evidence.sql</text>
     <path class="ln" d="M120,412 L120,444 L830,444 L830,416" marker-end="url(#d5a)"/>
     <text x="470" y="460" text-anchor="middle" class="sm mut">evidence.sql calls DBMS_WORKLOAD_REPOSITORY for the ASH and AWR reports</text>
   </svg>
   </div>
-  <figcaption><b>Who does what.</b> The controller runs the DDL and records the hot cursor's state around every statement. Each worker records its own wait and parse counters when the measurement window opens and closes. AWR snapshots bracket the window, and the window's ASH rows are copied out so the evidence survives after the in-memory buffer wraps.</figcaption>
+  <figcaption><b>Components.</b> The 24 worker sessions are started once (step 2) and measured in both tests. The controller session issues the DDL and records the hot cursor state before and after each statement. Each worker records its own wait and parse counters when the measurement window opens and closes. AWR snapshots are taken before and after each window. The window's ASH rows are copied to a table.</figcaption>
 </figure>
 
-<p>One run goes through fixed phases. These are the real timings of Run A from the controller's console output:</p>
+<p>Timings of steps 2 to 4, from the script output:</p>
 
 <figure class="diagram">
-  <div class="scroll">
-  <svg class="dg" viewBox="0 0 960 170" role="img" aria-label="Phases of one run: build table 14 s, start jobs 2 s, warm-up and AWR snapshot 29 s, measurement window 61 s with 10 DDLs, closing 2 s.">
-    <!-- 1 s = 8 px, t0 = 20:00:15 at x=30 -->
-    <rect class="sunk" x="30" y="60" width="112" height="40"/>
-    <text x="86" y="85" text-anchor="middle" class="sm">build T · 14 s</text>
-    <rect class="box" x="142" y="60" width="16" height="40"/>
-    <rect class="sunk" x="158" y="60" width="232" height="40"/>
-    <text x="274" y="78" text-anchor="middle" class="sm">warm-up 10 s</text>
-    <text x="274" y="94" text-anchor="middle" class="sm mut">+ AWR snapshot</text>
-    <rect class="box-keep" x="390" y="60" width="488" height="40"/>
-    <text x="634" y="52" text-anchor="middle" class="sm b">measurement window · 61 s</text>
-    <g class="fill-drop">
-      <rect x="434" y="62" width="2" height="36"/><rect x="478" y="62" width="2" height="36"/><rect x="522" y="62" width="2" height="36"/>
-      <rect x="566" y="62" width="2" height="36"/><rect x="610" y="62" width="2" height="36"/><rect x="654" y="62" width="2" height="36"/>
-      <rect x="698" y="62" width="2" height="36"/><rect x="742" y="62" width="2" height="36"/><rect x="786" y="62" width="2" height="36"/>
-      <rect x="830" y="62" width="2" height="36"/>
-    </g>
-    <rect class="box" x="878" y="60" width="16" height="40"/>
-    <line class="ln" x1="150" x2="150" y1="100" y2="124"/>
-    <text x="150" y="138" text-anchor="middle" class="sm mut">start 24 jobs</text>
-    <line class="ln" x1="886" x2="886" y1="100" y2="124"/>
-    <text x="886" y="138" text-anchor="middle" class="sm mut">AWR snapshot, stop</text>
-    <text x="634" y="124" text-anchor="middle" class="sm t-drop">a DDL every 5.5 s, 10 in total</text>
-    <line class="ln" x1="30" x2="894" y1="156" y2="156"/>
-    <text x="30" y="30" class="mono sm mut">20:00:15</text>
-    <text x="894" y="30" text-anchor="end" class="mono sm mut">20:02:03</text>
-  </svg>
-  </div>
-  <figcaption><b>Every run starts from an identical table.</b> T is rebuilt for each run. The warm-up keeps the start-up pile-up (24 sessions needing a brand-new cursor) out of the measurement. The first AWR snapshot took about 19 s on this box, which is why that block is longer than the 10 s warm-up.</figcaption>
+  <div class="scroll"><svg class="dg" viewBox="0 0 1050 252" role="img" aria-label="Steps 2 to 4 on one clock, 08:32:30 to 08:36:30 on 5 Nov 2026. The workers start in step 2 and keep running. Each test lets them settle, takes an AWR snapshot, runs 10 DDL statements over 60 seconds and takes another AWR snapshot."><text x="0" y="28" class="b">you run</text><text x="0" y="44" class="sm mut">shell script</text>
+<text x="0" y="88" class="b">controller</text><text x="0" y="104" class="sm mut">pinx_lab session</text>
+<text x="0" y="146" class="b">24 worker jobs</text><text x="0" y="162" class="sm mut">pinx_hot_loop</text>
+<text x="0" y="205" class="b">AWR snapshot</text>
+<line x1="261.2" y1="14" x2="261.2" y2="224" class="grid"/>
+<text x="261.2" y="242" text-anchor="middle" class="mono sm mut">08:33:00</text>
+<line x1="372.5" y1="14" x2="372.5" y2="224" class="grid"/>
+<text x="372.5" y="242" text-anchor="middle" class="mono sm mut">08:33:30</text>
+<line x1="483.8" y1="14" x2="483.8" y2="224" class="grid"/>
+<text x="483.8" y="242" text-anchor="middle" class="mono sm mut">08:34:00</text>
+<line x1="595.0" y1="14" x2="595.0" y2="224" class="grid"/>
+<text x="595.0" y="242" text-anchor="middle" class="mono sm mut">08:34:30</text>
+<line x1="706.2" y1="14" x2="706.2" y2="224" class="grid"/>
+<text x="706.2" y="242" text-anchor="middle" class="mono sm mut">08:35:00</text>
+<line x1="817.5" y1="14" x2="817.5" y2="224" class="grid"/>
+<text x="817.5" y="242" text-anchor="middle" class="mono sm mut">08:35:30</text>
+<line x1="928.8" y1="14" x2="928.8" y2="224" class="grid"/>
+<text x="928.8" y="242" text-anchor="middle" class="mono sm mut">08:36:00</text>
+<rect x="183.4" y="14" width="7.4" height="26" rx="3" class="box"/>
+<text x="183.4" y="58" class="mono sm">2_start_workers.sh</text>
+<rect x="339.1" y="14" width="281.8" height="26" rx="3" class="box-drop"/><text x="480.0" y="31.0" text-anchor="middle" class="mono sm b">3_test_drop.sh</text>
+<rect x="702.5" y="14" width="270.7" height="26" rx="3" class="box-keep"/><text x="837.9" y="31.0" text-anchor="middle" class="mono sm b">4_test_exchange.sh</text>
+<rect x="339.1" y="74" width="51.9" height="34" rx="3" class="sunk"/><text x="365.1" y="95.0" text-anchor="middle" class="sm">settle</text>
+<rect x="394.8" y="74" width="222.5" height="34" rx="3" class="box-drop"/>
+<line x1="413.3" y1="77" x2="413.3" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="435.5" y1="77" x2="435.5" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="454.1" y1="77" x2="454.1" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="476.3" y1="77" x2="476.3" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="494.9" y1="77" x2="494.9" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="517.1" y1="77" x2="517.1" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="535.7" y1="77" x2="535.7" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="557.9" y1="77" x2="557.9" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="576.5" y1="77" x2="576.5" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="598.7" y1="77" x2="598.7" y2="105" class="ln-drop" style="stroke-width:3"/>
+<text x="397.8" y="68" class="sm t-drop">10 × DROP PARTITION</text>
+<rect x="702.5" y="74" width="40.8" height="34" rx="3" class="sunk"/><text x="722.9" y="95.0" text-anchor="middle" class="sm">settle</text>
+<rect x="747.0" y="74" width="222.5" height="34" rx="3" class="box-keep"/>
+<line x1="765.6" y1="77" x2="765.6" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="787.8" y1="77" x2="787.8" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="806.4" y1="77" x2="806.4" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="828.6" y1="77" x2="828.6" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="847.2" y1="77" x2="847.2" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="869.4" y1="77" x2="869.4" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="888.0" y1="77" x2="888.0" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="910.2" y1="77" x2="910.2" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="928.8" y1="77" x2="928.8" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="947.3" y1="77" x2="947.3" y2="105" class="ln-keep" style="stroke-width:3"/>
+<text x="750.0" y="68" class="sm t-keep">10 × EXCHANGE PARTITION</text>
+<rect x="190.8" y="132" width="834.4" height="34" rx="3" class="sunk"/>
+<polygon points="1024.0,132 1040.0,149 1024.0,166" class="fill-mut"/>
+<text x="292.8" y="153" text-anchor="middle" class="sm">hot query</text>
+<rect x="394.8" y="132" width="222.5" height="34" rx="3" class="box-drop"/><text x="506.0" y="153.0" text-anchor="middle" class="sm t-drop">waits after each DDL</text>
+<text x="682.1" y="153" text-anchor="middle" class="sm">hot query</text>
+<rect x="747.0" y="132" width="222.5" height="34" rx="3" class="box-keep"/><text x="858.3" y="153.0" text-anchor="middle" class="sm t-keep">no waits</text>
+<polygon points="391.0,190 398.0,199 391.0,208 384.0,199" class="fill-ink"/>
+<text x="401.0" y="204" class="mono sm">38</text>
+<polygon points="621.0,190 628.0,199 621.0,208 614.0,199" class="fill-ink"/>
+<text x="631.0" y="204" class="mono sm">39</text>
+<polygon points="743.3,190 750.3,199 743.3,208 736.3,199" class="fill-ink"/>
+<text x="753.3" y="204" class="mono sm">40</text>
+<polygon points="969.5,190 976.5,199 969.5,208 962.5,199" class="fill-ink"/>
+<text x="979.5" y="204" class="mono sm">41</text></svg></div>
+  <figcaption><b>Timeline, 08:32:30 to 08:36:30.</b> The workers run continuously from step 2. Each test: 10 s settle, AWR snapshot (diamond, with snapshot ID), 60 s measurement window with one DDL every 5.5 s (ticks), AWR snapshot. The EXCHANGE test runs on the table as left by the DROP test (390 partitions). The hot query reads only P1.</figcaption>
 </figure>
 
-<p>Deciding whether a particular DDL invalidated the cursor is harder than it sounds. Under load, every reparse builds the cursor in a <em>different</em> child slot, and the invalidated child disappears from <code>V$SQL</code>. Comparing <code>INVALIDATIONS</code> before and after the run therefore reported 5 invalidations for 10 drops. The harness instead takes a signature of every child of the hot cursor (address, loads, invalidations) just before each DDL and again just before the next one. If the two differ, that DDL invalidated the cursor.</p>
+<p>A comparison of <code>V$SQL.INVALIDATIONS</code> before and after a test undercounts under load. With 24 sessions, each reparse creates the cursor in a different child slot and the invalidated child leaves <code>V$SQL</code>; the before/after comparison reported 5 invalidations for 10 drops. The harness records a signature of every child of the hot cursor (address, loads, invalidations) before each DDL and again before the next DDL. A changed signature means that DDL invalidated the cursor.</p>
 
 <!-- ================================================================ -->
-<h2 id="visible">Making the pile-up visible</h2>
-<p>ASH samples every active session once per second. A pile-up that lasts a fifth of a second usually falls between two samples. The first versions of the test showed exactly that. The workers' own counters recorded 36.6 s of <code>cursor: pin S wait on X</code> over 10 drops, while ASH recorded zero samples of it.</p>
+<h2 id="visible">ASH sampling and wait duration</h2>
+<p>ASH samples active sessions once per second. A wait of 0.2 s is usually not sampled. In early versions of the test, the workers' counters recorded 36.6 s of <code>cursor: pin S wait on X</code> over 10 drops, and ASH recorded 0 samples of that event.</p>
 
 <figure class="diagram">
   <div class="scroll">
-  <svg class="dg" viewBox="0 0 960 240" role="img" aria-label="Short pile-ups of about 0.2 s fall between the once-per-second ASH samples; pile-ups of about 2 s always contain at least one sample.">
+  <svg class="dg" viewBox="0 0 960 240" role="img" aria-label="Waits of about 0.2 s fall between the once-per-second ASH samples; waits of about 2 s contain at least one sample.">
     <!-- 1 s = 70 px, t=0 at x=100 -->
     <g>
       <line class="grid" x1="170" x2="170" y1="40" y2="196"/><line class="grid" x1="240" x2="240" y1="40" y2="196"/>
@@ -549,36 +592,36 @@ create index t_x_grp on t_x (grp);</pre>
       <line class="grid" x1="730" x2="730" y1="40" y2="196"/><line class="grid" x1="800" x2="800" y1="40" y2="196"/>
       <line class="grid" x1="870" x2="870" y1="40" y2="196"/>
     </g>
-    <text x="100" y="34" class="b">Cheap hard parse: pile-ups of about 0.2 s</text>
+    <text x="100" y="34" class="b">Short hard parse: waits of about 0.2 s</text>
     <rect class="sunk" x="100" y="48" width="840" height="34" rx="3"/>
     <rect class="fill-drop" x="191" y="50" width="14" height="30"/>
     <rect class="fill-drop" x="576" y="50" width="14" height="30"/>
     <text x="100" y="102" class="sm mut">measured: 36.6 s of waiting, 0 ASH samples</text>
 
-    <text x="100" y="132" class="b">2 s hard parse (PARSE_MS = 2000): pile-ups of about 2 s</text>
+    <text x="100" y="132" class="b">2 s hard parse (PARSE_MS = 2000): waits of about 2 s</text>
     <rect class="sunk" x="100" y="146" width="840" height="34" rx="3"/>
     <rect class="fill-drop" x="191" y="148" width="140" height="30"/>
     <rect class="fill-drop" x="576" y="148" width="140" height="30"/>
     <g class="fill-keep">
       <circle cx="240" cy="163" r="4"/><circle cx="310" cy="163" r="4"/><circle cx="590" cy="163" r="4"/><circle cx="660" cy="163" r="4"/>
     </g>
-    <text x="100" y="200" class="sm mut">measured: 459.9 s of waiting, 460 ASH samples</text>
+    <text x="100" y="200" class="sm mut">measured: 459.5 s of waiting, 437 ASH samples</text>
 
-    <text x="940" y="226" text-anchor="end" class="sm mut">grey lines: ASH samples once per second · teal dots: a sample that lands inside a pile-up</text>
+    <text x="940" y="226" text-anchor="end" class="sm mut">grey lines: ASH samples, once per second · teal dots: a sample during a wait</text>
   </svg>
   </div>
-  <figcaption><b>The sampling has to catch the pile-up.</b> The timing here is illustrative; the two "measured" lines are real. The top line comes from an early run with a cheap query, the bottom one from the final run.</figcaption>
+  <figcaption><b>ASH sampling against wait duration.</b> The timing is schematic. The two "measured" lines are measured values: top, an early run with a short hard parse; bottom, the run on this page with <code>PARSE_MS = 2000</code>.</figcaption>
 </figure>
 
-<p>Two settings make the pile-up large and long enough to see, without changing what is being tested:</p>
+<p>Two settings increase the duration of the waits. Neither changes how the DDL affects the cursor:</p>
 <ul>
-  <li><strong><code>PARSE_MS</code></strong> (2000) sets how much CPU each hard parse of the hot query costs. The query carries a predicate <code>pinx_parse_marker(a.id) &gt;= 0</code>, which is always true. The function has user-defined optimizer statistics. During every hard parse, the optimizer calls their selectivity function, and that function burns <code>PARSE_MS</code> of CPU. Executions never call it, so they stay cheap.</li>
-  <li><strong><code>THINK_MS</code></strong> (20) makes each worker pause after every execution. Without a pause, 24 sessions keep both CPUs busy all the time, and ASH then reports every session as "ON CPU", waiting or not.</li>
+  <li><strong><code>PARSE_MS</code></strong> (2000): CPU time of each hard parse of the hot query. The query contains the predicate <code>pinx_parse_marker(a.id) &gt;= 0</code>, which is always true. The function has user-defined optimizer statistics. During each hard parse the optimizer calls their selectivity function, which uses <code>PARSE_MS</code> of CPU. Executions do not call it.</li>
+  <li><strong><code>THINK_MS</code></strong> (20): pause after each execution. Without it, 24 sessions saturate both CPUs, and ASH reports waiting sessions as "ON CPU".</li>
 </ul>
 
 <figure class="diagram">
   <div class="scroll">
-  <svg class="dg" viewBox="0 0 960 230" role="img" aria-label="During a hard parse the optimizer calls ODCIStatsSelectivity for the marker predicate, which burns PARSE_MS of CPU; executions only call the trivial function.">
+  <svg class="dg" viewBox="0 0 960 230" role="img" aria-label="During a hard parse the optimizer calls ODCIStatsSelectivity for the marker predicate, which uses PARSE_MS of CPU; executions only call the trivial function.">
     <defs>
       <marker id="d7a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
     </defs>
@@ -598,7 +641,7 @@ create index t_x_grp on t_x (grp);</pre>
     <text x="480" y="104" text-anchor="middle" class="sm mut">ODCIStatsSelectivity</text>
     <path class="ln" d="M562,83 L583,83" marker-end="url(#d7a)"/>
     <rect class="box-drop" x="587" y="40" width="164" height="86" rx="6"/>
-    <text x="669" y="66" text-anchor="middle" class="sm t-drop b">burns PARSE_MS</text>
+    <text x="669" y="66" text-anchor="middle" class="sm t-drop b">uses PARSE_MS</text>
     <text x="669" y="86" text-anchor="middle" class="sm t-drop">2,000 ms of CPU</text>
     <text x="669" y="104" text-anchor="middle" class="sm mut">then returns 50%</text>
     <path class="ln" d="M751,83 L772,83" marker-end="url(#d7a)"/>
@@ -611,14 +654,14 @@ create index t_x_grp on t_x (grp);</pre>
     <text x="480" y="203" text-anchor="middle" class="sm">uses the cached plan · <tspan class="mono">pinx_parse_marker(p)</tspan> just returns <tspan class="mono">p</tspan> · no optimizer, no extra CPU</text>
   </svg>
   </div>
-  <figcaption><b>A controlled, realistic parse cost.</b> A hard parse that burns CPU is what a complex production statement does. Other ways of making the parse slow failed. A statement with hundreds of <code>UNION ALL</code> branches made each session hold about 300 MB of PGA, and 24 sessions hit <code>PGA_AGGREGATE_LIMIT</code>. Dynamic sampling of a large table was too fast to matter.</figcaption>
+  <figcaption><b>Parse cost implemented as CPU time.</b> Two alternatives were tested. A statement with several hundred <code>UNION ALL</code> branches used about 300 MB of PGA per session, and 24 sessions exceeded <code>PGA_AGGREGATE_LIMIT</code>. Dynamic sampling of a large table added too little parse time.</figcaption>
 </figure>
 
 <!-- ================================================================ -->
 <h2 id="results">Measurements</h2>
-<p>All numbers below come from the final clean run: a fresh install followed by <code>run_all</code> under SQLcl, on 4 November 2026, with Run A from 20:07:59 and Run B from 20:09:33. The ASH and AWR figures are Oracle's own reports for those windows (AWR snapshots 34–35 and 36–37).</p>
+<p>Source: one run of the five steps, SQLcl, 5 November 2026. DROP test window from 08:33:36, EXCHANGE test window from 08:35:11. ASH and AWR figures: Oracle ASH and AWR reports for those windows (AWR snapshots 38–39 and 40–41).</p>
 
-<h3>The ASH timeline</h3>
+<h3>ASH timeline</h3>
 <figure class="chart">
   <div class="legend">
     <span><i class="sw" style="background:var(--drop)"></i>cursor: pin S wait on X</span>
@@ -628,216 +671,245 @@ create index t_x_grp on t_x (grp);</pre>
     <span><i class="sw dot" style="background:var(--muted)"></i>DDL that left it valid</span>
   </div>
   <div id="ash-charts" class="two"></div>
-  <figcaption><b>Every DROP is followed by a wall of waiting sessions; the EXCHANGE run stays flat.</b> Each bar is one ASH sample (once per second) of the 24 worker sessions, stacked by what they were doing. In Run A, 23 sessions sit in <code>cursor: pin S wait on X</code> for about two samples after each drop. In Run B, one or two sessions are on CPU at any moment.</figcaption>
+  <figcaption><b>ASH samples of the 24 worker sessions, by event.</b> One bar per sample, one sample per second. DROP test: 23 sessions in <code>cursor: pin S wait on X</code> for about two samples after each drop. EXCHANGE test: one or two sessions on CPU per sample.</figcaption>
 </figure>
 
-<h3>Where the database time went (AWR)</h3>
+<h3>Database time by event (AWR)</h3>
 <figure class="chart">
   <div class="scroll">
-  <svg class="dg" viewBox="0 0 960 210" role="img" aria-label="AWR database time: Run A 510.4 s of which 460.5 s waiting on cursor: pin S wait on X and 45.0 s CPU; Run B 39.2 s of which 32.7 s CPU.">
-    <!-- scale: x = 190 + s * 1.4 (0..520 s over 728 px) -->
-    <g class="grid">
-      <line x1="190" x2="190" y1="24" y2="160"/><line x1="330" x2="330" y1="24" y2="160"/><line x1="470" x2="470" y1="24" y2="160"/>
-      <line x1="610" x2="610" y1="24" y2="160"/><line x1="750" x2="750" y1="24" y2="160"/><line x1="890" x2="890" y1="24" y2="160"/>
-    </g>
-    <text x="20" y="58" class="b">Run A · DROP</text>
-    <text x="20" y="76" class="sm mut">DB time 510.4 s</text>
-    <rect class="fill-drop" x="190" y="40" width="644.7" height="40"/>
-    <rect class="fill-keep" x="834.7" y="40" width="63" height="40"/>
-    <rect class="fill-mut" x="897.7" y="40" width="6.9" height="40"/>
-    <text x="512" y="65" text-anchor="middle" class="sm" style="fill:var(--bg)">cursor: pin S wait on X · 460.5 s (90.2%)</text>
-    <text x="866" y="98" text-anchor="middle" class="sm t-keep">CPU 45.0 s</text>
-
-    <text x="20" y="128" class="b">Run B · EXCHANGE</text>
-    <text x="20" y="146" class="sm mut">DB time 39.2 s</text>
-    <rect class="fill-keep" x="190" y="110" width="45.8" height="40"/>
-    <rect class="fill-mut" x="235.8" y="110" width="9.1" height="40"/>
-    <text x="256" y="135" class="sm">CPU 32.7 s (83.4%) · no cursor: pin S wait on X</text>
-
-    <g class="sm mut">
-      <text x="190" y="180" text-anchor="middle">0 s</text><text x="330" y="180" text-anchor="middle">100 s</text><text x="470" y="180" text-anchor="middle">200 s</text>
-      <text x="610" y="180" text-anchor="middle">300 s</text><text x="750" y="180" text-anchor="middle">400 s</text><text x="890" y="180" text-anchor="middle">500 s</text>
-    </g>
-    <text x="540" y="202" text-anchor="middle" class="sm mut">seconds of database time in a 61-second window (grey: everything else)</text>
-  </svg>
+  <svg class="dg" viewBox="0 0 960 210" role="img" aria-label="AWR database time: DROP test 521.4 s, of which 459.9 s waiting on cursor: pin S wait on X and 54.7 s CPU; EXCHANGE test 46.2 s, of which 40.5 s CPU.">
+<g class="grid"><line x1="190.0" x2="190.0" y1="24" y2="160"/><line x1="325.0" x2="325.0" y1="24" y2="160"/><line x1="460.0" x2="460.0" y1="24" y2="160"/><line x1="595.0" x2="595.0" y1="24" y2="160"/><line x1="730.0" x2="730.0" y1="24" y2="160"/><line x1="865.0" x2="865.0" y1="24" y2="160"/></g>
+<text x="20" y="58" class="b">DROP test</text><text x="20" y="76" class="sm mut">DB time 521.4 s</text>
+<rect class="fill-drop" x="190.0" y="40" width="620.9" height="40"/>
+<rect class="fill-keep" x="810.9" y="40" width="73.8" height="40"/>
+<rect class="fill-mut" x="884.7" y="40" width="9.2" height="40"/>
+<text x="500.4" y="65" text-anchor="middle" class="sm" style="fill:var(--bg)">cursor: pin S wait on X · 459.9 s (88.2%)</text>
+<text x="847.8" y="98" text-anchor="middle" class="sm t-keep">CPU 54.7 s</text>
+<text x="20" y="128" class="b">EXCHANGE test</text><text x="20" y="146" class="sm mut">DB time 46.2 s</text>
+<rect class="fill-keep" x="190.0" y="110" width="54.7" height="40"/>
+<rect class="fill-mut" x="244.7" y="110" width="7.7" height="40"/>
+<text x="262.4" y="135" class="sm">CPU 40.5 s (87.7%) · no cursor: pin S wait on X</text>
+<g class="sm mut"><text x="190.0" y="180" text-anchor="middle">0 s</text><text x="325.0" y="180" text-anchor="middle">100 s</text><text x="460.0" y="180" text-anchor="middle">200 s</text><text x="595.0" y="180" text-anchor="middle">300 s</text><text x="730.0" y="180" text-anchor="middle">400 s</text><text x="865.0" y="180" text-anchor="middle">500 s</text></g>
+<text x="540" y="202" text-anchor="middle" class="sm mut">seconds of database time between the two AWR snapshots of each test (grey: everything else)</text>
+</svg>
   </div>
-  <figcaption><b>Same workload, same window length, thirteen times the database time.</b> Almost all of the difference is sessions waiting for each other to rebuild a cursor that the DDL had no reason to invalidate.</figcaption>
+  <figcaption><b>DB time: 521.4 s in the DROP test, 46.2 s in the EXCHANGE test.</b> Same workers, same window length. The difference is mainly <code>cursor: pin S wait on X</code>. Grey: other events, mainly <code>resmgr:cpu quantum</code> (Resource Manager CPU scheduling on 2 CPUs).</figcaption>
 </figure>
 
 <div class="two">
   <div class="tbl">
     <table>
-      <caption style="caption-side:top;text-align:left;padding:10px 12px 0;font-weight:600">AWR · Top foreground events · Run A (DROP)</caption>
+      <caption style="caption-side:top;text-align:left;padding:10px 12px 0;font-weight:600">AWR · Top foreground events · DROP test</caption>
       <thead><tr><th>Event</th><th class="r">Waits</th><th class="r">Time</th><th class="r">% DB time</th></tr></thead>
       <tbody>
-        <tr><td class="drop">cursor: pin S wait on X</td><td class="r">267</td><td class="r">460.5 s</td><td class="r">90.2</td></tr>
-        <tr><td>DB CPU</td><td class="r"></td><td class="r">45.0 s</td><td class="r">8.8</td></tr>
-        <tr><td>library cache lock</td><td class="r">28</td><td class="r">0.2 s</td><td class="r">0.0</td></tr>
-        <tr><td>library cache: mutex X</td><td class="r">32</td><td class="r">0.1 s</td><td class="r">0.0</td></tr>
+        <tr><td class="drop">cursor: pin S wait on X</td><td class="r">272</td><td class="r">459.9 s</td><td class="r">88.2</td></tr>
+        <tr><td>DB CPU</td><td class="r"></td><td class="r">54.7 s</td><td class="r">10.5</td></tr>
+        <tr><td>resmgr:cpu quantum</td><td class="r">154</td><td class="r">5.9 s</td><td class="r">1.1</td></tr>
+        <tr><td>library cache lock</td><td class="r">35</td><td class="r">0.4 s</td><td class="r">0.1</td></tr>
       </tbody>
     </table>
   </div>
   <div class="tbl">
     <table>
-      <caption style="caption-side:top;text-align:left;padding:10px 12px 0;font-weight:600">AWR · Top foreground events · Run B (EXCHANGE)</caption>
+      <caption style="caption-side:top;text-align:left;padding:10px 12px 0;font-weight:600">AWR · Top foreground events · EXCHANGE test</caption>
       <thead><tr><th>Event</th><th class="r">Waits</th><th class="r">Time</th><th class="r">% DB time</th></tr></thead>
       <tbody>
-        <tr><td class="keep">DB CPU</td><td class="r"></td><td class="r">32.7 s</td><td class="r">83.4</td></tr>
-        <tr><td>library cache: mutex X</td><td class="r">26</td><td class="r">0.1 s</td><td class="r">0.3</td></tr>
-        <tr><td>db file sequential read</td><td class="r">78</td><td class="r">0.0 s</td><td class="r">0.0</td></tr>
-        <tr><td>cursor: pin S</td><td class="r">3</td><td class="r">0.0 s</td><td class="r">0.0</td></tr>
+        <tr><td class="keep">DB CPU</td><td class="r"></td><td class="r">40.5 s</td><td class="r">87.7</td></tr>
+        <tr><td>resmgr:cpu quantum</td><td class="r">45</td><td class="r">4.6 s</td><td class="r">9.9</td></tr>
+        <tr><td>undo segment extension</td><td class="r">6</td><td class="r">0.3 s</td><td class="r">0.7</td></tr>
+        <tr><td>library cache: mutex X</td><td class="r">9</td><td class="r">0.0 s</td><td class="r">0.1</td></tr>
       </tbody>
     </table>
   </div>
 </div>
 
 <div class="facts">
-  <div class="fact"><b>87.9%</b><span>of ASH activity in Run A was <code>cursor: pin S wait on X</code> (7.62 average active sessions)</span></div>
-  <div class="fact"><b>100%</b><span>of ASH activity in Run B was CPU (0.44 average active sessions)</span></div>
-  <div class="fact"><b>1.72 s</b><span>average wait per <code>cursor: pin S wait on X</code> in Run A (AWR)</span></div>
-  <div class="fact"><b>46 s</b><span>of session time lost per DROP statement (460.5 s over 10 drops), for 24 ms of DDL</span></div>
+  <div class="fact"><b>90.7%</b><span>of ASH activity in the DROP test was <code>cursor: pin S wait on X</code> (7.16 average active sessions)</span></div>
+  <div class="fact"><b>100%</b><span>of ASH activity in the EXCHANGE test was CPU (0.56 average active sessions)</span></div>
+  <div class="fact"><b>1.69 s</b><span>average wait per <code>cursor: pin S wait on X</code> in the DROP test (AWR)</span></div>
+  <div class="fact"><b>46 s</b><span>of session time lost per DROP statement (459.9 s over 10 drops), for 41 ms of DDL</span></div>
 </div>
 
-<h3>Every DDL, one by one</h3>
-<p>Per statement: when it ran (seconds into the window), how long it took, and whether it changed the hot cursor's signature.</p>
+<h3>DDL statements</h3>
+<p>Per statement: start time (seconds into the window), elapsed time, and whether the hot cursor's signature changed.</p>
 <div class="two">
   <div class="tbl"><table>
-    <caption style="caption-side:top;text-align:left;padding:10px 12px 0;font-weight:600">Run A · DROP</caption>
+    <caption style="caption-side:top;text-align:left;padding:10px 12px 0;font-weight:600">DROP test</caption>
     <thead><tr><th>#</th><th>Statement</th><th class="r">at</th><th class="r">ms</th><th>Invalidated</th></tr></thead>
-    <tbody><tr><td class="r">1</td><td class="mono">drop partition p400</td><td class="r">5.5 s</td><td class="r">22.9</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">2</td><td class="mono">drop partition p399</td><td class="r">10.9 s</td><td class="r">29.9</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">3</td><td class="mono">drop partition p398</td><td class="r">16.4 s</td><td class="r">19.7</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">4</td><td class="mono">drop partition p397</td><td class="r">21.9 s</td><td class="r">21.1</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">5</td><td class="mono">drop partition p396</td><td class="r">27.4 s</td><td class="r">23.9</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">6</td><td class="mono">drop partition p395</td><td class="r">32.8 s</td><td class="r">33.1</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">7</td><td class="mono">drop partition p394</td><td class="r">38.3 s</td><td class="r">25.8</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">8</td><td class="mono">drop partition p393</td><td class="r">43.8 s</td><td class="r">23.0</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">9</td><td class="mono">drop partition p392</td><td class="r">49.3 s</td><td class="r">26.4</td><td><span class="pill y">yes</span></td></tr>
-<tr><td class="r">10</td><td class="mono">drop partition p391</td><td class="r">54.7 s</td><td class="r">17.6</td><td><span class="pill y">yes</span></td></tr></tbody>
+    <tbody><tr><td class="r">1</td><td class="mono">drop partition p400</td><td class="r">5.5 s</td><td class="r">76.1</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">2</td><td class="mono">drop partition p399</td><td class="r">11.0 s</td><td class="r">66.2</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">3</td><td class="mono">drop partition p398</td><td class="r">16.5 s</td><td class="r">38.1</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">4</td><td class="mono">drop partition p397</td><td class="r">22.0 s</td><td class="r">30.4</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">5</td><td class="mono">drop partition p396</td><td class="r">27.5 s</td><td class="r">33.4</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">6</td><td class="mono">drop partition p395</td><td class="r">33.0 s</td><td class="r">29.5</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">7</td><td class="mono">drop partition p394</td><td class="r">38.4 s</td><td class="r">31.8</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">8</td><td class="mono">drop partition p393</td><td class="r">43.9 s</td><td class="r">34.0</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">9</td><td class="mono">drop partition p392</td><td class="r">49.4 s</td><td class="r">31.9</td><td><span class="pill y">yes</span></td></tr>
+<tr><td class="r">10</td><td class="mono">drop partition p391</td><td class="r">54.9 s</td><td class="r">39.8</td><td><span class="pill y">yes</span></td></tr></tbody>
   </table></div>
   <div class="tbl"><table>
-    <caption style="caption-side:top;text-align:left;padding:10px 12px 0;font-weight:600">Run B · EXCHANGE <span style="font-weight:400;color:var(--muted)">(always p400 ↔ t_x)</span></caption>
+    <caption style="caption-side:top;text-align:left;padding:10px 12px 0;font-weight:600">EXCHANGE test <span style="font-weight:400;color:var(--muted)">(always p390 ↔ t_x)</span></caption>
     <thead><tr><th>#</th><th>Statement</th><th class="r">at</th><th class="r">ms</th><th>Invalidated</th></tr></thead>
-    <tbody><tr><td class="r">1</td><td class="mono">exchange partition p400</td><td class="r">5.5 s</td><td class="r">10.7</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">2</td><td class="mono">exchange partition p400</td><td class="r">10.9 s</td><td class="r">8.5</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">3</td><td class="mono">exchange partition p400</td><td class="r">16.4 s</td><td class="r">10.3</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">4</td><td class="mono">exchange partition p400</td><td class="r">21.8 s</td><td class="r">8.8</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">5</td><td class="mono">exchange partition p400</td><td class="r">27.3 s</td><td class="r">7.4</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">6</td><td class="mono">exchange partition p400</td><td class="r">32.7 s</td><td class="r">7.8</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">7</td><td class="mono">exchange partition p400</td><td class="r">38.2 s</td><td class="r">9.2</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">8</td><td class="mono">exchange partition p400</td><td class="r">43.7 s</td><td class="r">8.2</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">9</td><td class="mono">exchange partition p400</td><td class="r">49.1 s</td><td class="r">9.1</td><td><span class="pill n">no</span></td></tr>
-<tr><td class="r">10</td><td class="mono">exchange partition p400</td><td class="r">54.6 s</td><td class="r">10.6</td><td><span class="pill n">no</span></td></tr></tbody>
+    <tbody><tr><td class="r">1</td><td class="mono">exchange partition p390</td><td class="r">5.5 s</td><td class="r">35.7</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">2</td><td class="mono">exchange partition p390</td><td class="r">10.9 s</td><td class="r">11.6</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">3</td><td class="mono">exchange partition p390</td><td class="r">16.4 s</td><td class="r">10.4</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">4</td><td class="mono">exchange partition p390</td><td class="r">21.9 s</td><td class="r">13.3</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">5</td><td class="mono">exchange partition p390</td><td class="r">27.3 s</td><td class="r">9.9</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">6</td><td class="mono">exchange partition p390</td><td class="r">32.8 s</td><td class="r">11.6</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">7</td><td class="mono">exchange partition p390</td><td class="r">38.2 s</td><td class="r">9.7</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">8</td><td class="mono">exchange partition p390</td><td class="r">43.7 s</td><td class="r">10.7</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">9</td><td class="mono">exchange partition p390</td><td class="r">49.2 s</td><td class="r">13.1</td><td><span class="pill n">no</span></td></tr>
+<tr><td class="r">10</td><td class="mono">exchange partition p390</td><td class="r">54.6 s</td><td class="r">14.4</td><td><span class="pill n">no</span></td></tr></tbody>
   </table></div>
 </div>
 
-<h3>The text report and its checks</h3>
-<p><code>report.sql</code> prints every metric side by side and ends with 17 checks. This is its output from the final run, unedited:</p>
+<h3>Text report and checks</h3>
+<p><code>report.sql</code> runs after each test and prints the metrics and checks. Below: end of the <code>4_test_exchange.sh</code> output, both tests, 17 checks. Two tables are omitted (runs and DDL list; both shown above).</p>
 <figure class="code">
-  <figcaption><span class="file">report.sql output</span><span>SQLcl · runs 1 and 2 · 4 Nov 2026</span></figcaption>
+  <figcaption><span class="file">4_test_exchange.sh output</span><span>SQLcl · runs 1 and 2 · 5 Nov 2026</span></figcaption>
   <pre class="src console"><code>==== Writing evidence to reports/
 reports/pinx_timeline_r1_r2.html   (open this one)
-reports/pinx_run1_drop_ash.html   (Oracle ASH report, 2026-11-04 20:07:59 to 2026-11-04 20:09:00)
-reports/pinx_run1_drop_awr.html   (Oracle AWR report, snapshots 34 to 35)
-reports/pinx_run2_exchange_ash.html   (Oracle ASH report, 2026-11-04 20:09:33 to 2026-11-04 20:10:35)
-reports/pinx_run2_exchange_awr.html   (Oracle AWR report, snapshots 36 to 37)
+reports/pinx_run1_drop_ash.html   (Oracle ASH report, 2026-11-05 08:33:36 to 2026-11-05 08:34:37)
+reports/pinx_run1_drop_awr.html   (Oracle AWR report, snapshots 38 to 39)
+reports/pinx_run2_exchange_ash.html   (Oracle ASH report, 2026-11-05 08:35:11 to 2026-11-05 08:36:12)
+reports/pinx_run2_exchange_awr.html   (Oracle AWR report, snapshots 40 to 41)
 
 ==== Metrics (window only: after warm-up, until the quiet tail ends)
 
 Metric                                                        A: DROP          B: EXCHANGE
 ------------------------------------------------ -------------------- --------------------
 DDL statements executed                                            10                   10
-DDL elapsed, avg / max (ms)                               24.3 / 33.1           9.1 / 10.7
+DDL elapsed, avg / max (ms)                               41.1 / 76.1            14 / 35.7
 Hot cursor: DDLs that invalidated it                         10 of 10              0 of 10
 Hot cursor: ddl_no_invalidate (at end)                              N                    X
 Hot cursor: is_rolling_invalid (at end)                             N                    N
-Workers: hot query executions                                   47787                70678
-Workers: executions per second                                    793                 1177
+Workers: hot query executions                                   48159                70712
+Workers: executions per second                                    797                 1176
 Workers: hard parses                                               40                    0
-Workers: parse time elapsed (ms)                                 9960                    0
+Workers: parse time elapsed (ms)                                 9930                    0
 Workers: waits on cursor: pin S wait on X                         230                    0
-Workers: time in cursor: pin S wait on X (ms)                  459912                    0
-Workers: waits on cursor: pin S                                     3                    3
+Workers: time in cursor: pin S wait on X (ms)                  459529                    0
+Workers: waits on cursor: mutex X                                   0                   51
+Workers: waits on cursor: pin S                                     4                    2
 Workers: waits on library cache lock                                9                    0
-Workers: waits on library cache: mutex X                           29                   24
-ASH samples: cursor: pin S wait on X                              460                    -
-Instance: hard parses                                              83                   20
+Workers: waits on library cache: mutex X                           30                    9
+ASH samples: cursor: pin S wait on X                              437                    -
+Instance: hard parses                                             102                   32
 Instance: waits on cursor: pin S wait on X                        230                    0
 
 ==== Checks
 
 KIND     Check                                Expected   Actual     Result
 -------- ------------------------------------ ---------- ---------- ------
-DROP     Run completed                        DONE       DONE       PASS
-DROP     DDL statements executed              10         10         PASS
-DROP     Workers measured                     24         24         PASS
-DROP     Worker procedure still VALID         VALID      VALID      PASS
-DROP     DDLs that invalidated the hot cursor 10         10         PASS
-DROP     Waits on cursor: pin S wait on X     &gt; 0        230        PASS
-DROP     Worker hard parses                   &gt; 0        40         PASS
-DROP     ASH samples on pin S wait on X       &gt; 0        460        PASS
-EXCHANGE Run completed                        DONE       DONE       PASS
-EXCHANGE DDL statements executed              10         10         PASS
-EXCHANGE Workers measured                     24         24         PASS
-EXCHANGE Worker procedure still VALID         VALID      VALID      PASS
-EXCHANGE DDLs that invalidated the hot cursor 0          0          PASS
-EXCHANGE Waits on cursor: pin S wait on X     0          0          PASS
-EXCHANGE Worker hard parses                   0          0          PASS
-EXCHANGE ddl_no_invalidate                    Y or X     X          PASS
-EXCHANGE ASH samples on pin S wait on X       0          0          PASS
+DROP     Run completed                        DONE       DONE       PASS  
+DROP     DDL statements executed              10         10         PASS  
+DROP     Workers measured                     24         24         PASS  
+DROP     Worker procedure still VALID         VALID      VALID      PASS  
+DROP     DDLs that invalidated the hot cursor 10         10         PASS  
+DROP     Waits on cursor: pin S wait on X     &gt; 0        230        PASS  
+DROP     Worker hard parses                   &gt; 0        40         PASS  
+DROP     ASH samples on pin S wait on X       &gt; 0        437        PASS  
+EXCHANGE Run completed                        DONE       DONE       PASS  
+EXCHANGE DDL statements executed              10         10         PASS  
+EXCHANGE Workers measured                     24         24         PASS  
+EXCHANGE Worker procedure still VALID         VALID      VALID      PASS  
+EXCHANGE DDLs that invalidated the hot cursor 0          0          PASS  
+EXCHANGE Waits on cursor: pin S wait on X     0          0          PASS  
+EXCHANGE Worker hard parses                   0          0          PASS  
+EXCHANGE ddl_no_invalidate                    Y or X     X          PASS  
+EXCHANGE ASH samples on pin S wait on X       0          0          PASS  
 
-OVERALL: PASS (17 checks)
-
-OK (run_all)</code></pre>
+OVERALL: PASS (17 checks)</code></pre>
 </figure>
 
-<h3>Repeatable</h3>
-<p>The two complete runs with these settings, one under SQL*Plus and one under SQLcl, agree closely:</p>
+<h3>Repeated runs</h3>
+<p>Three runs with the same settings. Runs 1 and 2 used the earlier single-script harness, which started new workers for each test.</p>
 <div class="tbl"><table>
-  <thead><tr><th>Run pair</th><th class="r">DROP: invalidating DDLs</th><th class="r">DROP: waited</th><th class="r">DROP: ASH samples</th><th class="r">Exec/s DROP → EXCHANGE</th><th class="r">EXCHANGE: waited</th></tr></thead>
+  <thead><tr><th>Run</th><th class="r">DROP: invalidating DDLs</th><th class="r">DROP: waited</th><th class="r">DROP: ASH samples</th><th class="r">Exec/s DROP / EXCHANGE</th><th class="r">EXCHANGE: waited</th></tr></thead>
   <tbody>
-    <tr><td>20:00, SQL*Plus</td><td class="r">10 of 10</td><td class="r">457.9 s</td><td class="r">472</td><td class="r">804 → 1,179</td><td class="r">0 s</td></tr>
-    <tr><td>20:07, SQLcl, fresh install</td><td class="r">10 of 10</td><td class="r">459.9 s</td><td class="r">460</td><td class="r">793 → 1,177</td><td class="r">0 s</td></tr>
+    <tr><td>4 Nov 20:00, SQL*Plus, single script</td><td class="r">10 of 10</td><td class="r">457.9 s</td><td class="r">472</td><td class="r">804 / 1,179</td><td class="r">0 s</td></tr>
+    <tr><td>4 Nov 20:07, SQLcl, single script</td><td class="r">10 of 10</td><td class="r">459.9 s</td><td class="r">460</td><td class="r">793 / 1,177</td><td class="r">0 s</td></tr>
+    <tr><td>5 Nov 08:33, SQLcl, five steps (this page)</td><td class="r">10 of 10</td><td class="r">459.5 s</td><td class="r">437</td><td class="r">797 / 1,176</td><td class="r">0 s</td></tr>
   </tbody>
 </table></div>
 
 <!-- ================================================================ -->
-<h2 id="scripts">The scripts that ran</h2>
-<p>Everything below is copied from the project files, with their real line numbers. The full harness lives in <code>setup.sql</code> (tables, the <code>PINX_LAB</code> package, report views) and a handful of small driver scripts.</p>
+<h2 id="scripts">Scripts</h2>
+<p>Excerpts from the project files, with line numbers. Main components: <code>setup.sql</code> (tables, package <code>PINX_LAB</code>, report views), five shell scripts, several SQL driver scripts.</p>
 
-<h3>The commands</h3>
-<p>The final run, as executed on the database host. The password is replaced here.</p>
+<h3>Commands</h3>
+<p>Commands executed on the database host, in the project directory. The password was supplied in the environment variable <code>PINX_PASSWORD</code>; without it, each script prompts for it.</p>
 <figure class="code">
   <figcaption><span class="file">shell</span><span>as oracle on the database server</span></figcaption>
-  <pre class="src"><code><span class="c"># 1. as SYSDBA on the database host: create the test schema in PDB1</span>
-sqlplus -S -L / as sysdba
-SQL&gt; alter session set container = PDB1;
-SQL&gt; @admin/create_user.sql &lt;password&gt;
+  <pre class="src"><code><span class="c"># on the database host, as oracle, in the project directory</span>
+<span class="c"># connection.conf: PINX_SERVICE=//localhost:1521/pdb1.world</span>
+<span class="c">#                  DBA_CONNECT='/ as sysdba'   DBA_CONTAINER=PDB1</span>
+export PINX_PASSWORD=&lt;password&gt;
 
-<span class="c"># 2. as the test schema: start clean, then run everything with SQLcl</span>
-PINX_CLIENT=sql ./run.sh 'pinx/&lt;password&gt;@//localhost:1521/pdb1.world' cleanup
-PINX_CLIENT=sql ./run.sh 'pinx/&lt;password&gt;@//localhost:1521/pdb1.world' run_all
-<span class="c">#   -&gt; setup, Run A (DROP), Run B (EXCHANGE), evidence, report; exit code 0</span></code></pre>
+./1_build.sh            # 08:31:54  user, objects, data
+./2_start_workers.sh    # 08:32:37  24 workers start and keep running
+./run.sh status         # 08:33:03  what they are doing
+./3_test_drop.sh        # 08:33:18  DROP test       -&gt; exit code 0
+./4_test_exchange.sh    # 08:34:56  EXCHANGE test   -&gt; exit code 0
+./5_cleanup.sh          # workers stopped, user PINX dropped</code></pre>
 </figure>
 
 <h3>Configuration and drivers</h3>
 <div class="codes">
+<figure class="code"><figcaption><span class="file">connection.conf</span><span>whole file · how the scripts connect; no passwords</span></figcaption><pre class="src"><code><span class="c"># ---------------------------------------------------------------------</span>
+<span class="c"># connection.conf - how the numbered scripts connect to the database.</span>
+<span class="c"># Edit this once. A variable already set in your environment wins over</span>
+<span class="c"># the value here (e.g.  DBA_CONTAINER=PDB2 ./1_build.sh).</span>
+<span class="c"># Passwords are never stored here: the scripts ask for them, or take</span>
+<span class="c"># them from PINX_PASSWORD / DBA_PASSWORD in the environment.</span>
+<span class="c"># ---------------------------------------------------------------------</span>
+
+<span class="c"># Service of the PDB that holds the test user PINX, as host:port/service.</span>
+: "${PINX_SERVICE:=//localhost:1521/pdb1.world}"
+
+<span class="c"># How to connect as a DBA. Used by 1_build.sh (create the user) and</span>
+<span class="c"># 5_cleanup.sh (drop it).</span>
+<span class="c">#   '/ as sysdba'                    on the database host, OS authentication;</span>
+<span class="c">#                                    set DBA_CONTAINER to the PDB</span>
+<span class="c">#   'system@//dbhost:1521/pdb1'      from anywhere; you are asked for the</span>
+<span class="c">#                                    password; leave DBA_CONTAINER empty</span>
+<span class="c">#   'sys@//dbhost:1521/pdb1 as sysdba'   likewise</span>
+: "${DBA_CONNECT:=/ as sysdba}"
+
+<span class="c"># PDB to switch to after the DBA login (needed when that login lands in</span>
+<span class="c"># CDB$ROOT, as '/ as sysdba' does). Empty = stay where the login lands.</span>
+: "${DBA_CONTAINER:=PDB1}"
+
+<span class="c"># Optional: a complete connect string for PINX that needs no password,</span>
+<span class="c"># e.g. '/@pinx_wallet' with an Oracle wallet. Overrides PINX_SERVICE.</span>
+: "${PINX_CONNECT:=}"
+
+<span class="c"># SQL client: 'sql' (SQLcl) or 'sqlplus'. Empty = SQLcl if it is on</span>
+<span class="c"># PATH, otherwise SQL*Plus.</span>
+: "${PINX_CLIENT:=}"</code></pre></figure>
 <figure class="code"><figcaption><span class="file">config.sql</span><span>whole file</span></figcaption><pre class="src"><code><span class="c">-- =====================================================================</span>
-<span class="c">-- config.sql - the only file you should need to edit.</span>
-<span class="c">-- Every other script includes it, so values apply to all of them.</span>
+<span class="c">-- config.sql - the test settings; the only SQL file you should need to</span>
+<span class="c">-- edit. Every step includes it, so values apply to all of them.</span>
+<span class="c">-- (How to connect is in connection.conf.)</span>
 <span class="c">-- =====================================================================</span>
 
-<span class="c">-- Concurrent sessions (DBMS_SCHEDULER jobs) running the hot query.</span>
-<span class="c">-- Must be &lt;= job_queue_processes - 1. More sessions = bigger pile-up.</span>
+<span class="c">-- Step 2: concurrent sessions (DBMS_SCHEDULER jobs) running the hot</span>
+<span class="c">-- query. Must be &lt;= job_queue_processes - 1. More sessions = bigger pile-up.</span>
 <span class="k">define</span> NJOBS  = <span class="n">24</span>
 
-<span class="c">-- Range partitions in table T (1000 rows each). The hot query reads</span>
-<span class="c">-- only P1; the DDL only touches the highest partitions.</span>
+<span class="c">-- Step 2: the workers stop by themselves after this many minutes, in</span>
+<span class="c">-- case nobody stops them. Each test extends it if it needs more time.</span>
+<span class="k">define</span> WORKER_MINUTES = <span class="n">60</span>
+
+<span class="c">-- Step 1: range partitions in table T (1000 rows each). The hot query</span>
+<span class="c">-- reads only P1; the DDL only touches the highest partitions. Every DROP</span>
+<span class="c">-- test removes NDDL of them, so 400 lasts for dozens of tests.</span>
 <span class="k">define</span> NPART  = <span class="n">400</span>
 
-<span class="c">-- Partition DDL statements issued per run. Run A drops the NDDL highest</span>
-<span class="c">-- partitions one by one; run B exchanges the highest partition NDDL</span>
-<span class="c">-- times. Same number of DDLs on both sides keeps the runs comparable.</span>
+<span class="c">-- Steps 3 and 4: partition DDL statements per test. The DROP test drops</span>
+<span class="c">-- the NDDL highest partitions one by one; the EXCHANGE test exchanges the</span>
+<span class="c">-- highest partition with T_X NDDL times. Same number of DDLs on both</span>
+<span class="c">-- sides keeps the tests comparable.</span>
 <span class="k">define</span> NDDL   = <span class="n">10</span>
 
 <span class="c">-- Length of the measurement window in seconds. The NDDL statements are</span>
@@ -846,8 +918,9 @@ PINX_CLIENT=sql ./run.sh 'pinx/&lt;password&gt;@//localhost:1521/pdb1.world' run
 <span class="c">-- with a high PARSE_MS).</span>
 <span class="k">define</span> SECS   = <span class="n">60</span>
 
-<span class="c">-- Seconds the workers run before measurement starts, so the start-up</span>
-<span class="c">-- parse storm (24 sessions parsing the same new cursor) is excluded.</span>
+<span class="c">-- Steps 3 and 4: seconds a test waits, with the workers running, before</span>
+<span class="c">-- it opens the measurement window, so the start-up parse storm or the</span>
+<span class="c">-- tail of a previous test is excluded.</span>
 <span class="k">define</span> WARMUP = <span class="n">10</span>
 
 <span class="c">-- CPU cost (ms) of every hard parse of the hot query. The optimizer</span>
@@ -865,47 +938,99 @@ PINX_CLIENT=sql ./run.sh 'pinx/&lt;password&gt;@//localhost:1521/pdb1.world' run
 <span class="c">-- Aim for well under cpu_count busy sessions on average.</span>
 <span class="k">define</span> THINK_MS = <span class="n">20</span>
 
-<span class="c">-- AWR snapshots before and after each run's measurement window, plus</span>
+<span class="c">-- AWR snapshots before and after each test's measurement window, plus</span>
 <span class="c">-- Oracle ASH/AWR HTML reports from evidence.sql. Needs the Diagnostics</span>
 <span class="c">-- Pack licence. AUTO = only when control_management_pack_access</span>
 <span class="c">-- includes DIAGNOSTIC; YES = required (fail otherwise); NO = never.</span>
 <span class="k">define</span> AWR = AUTO</code></pre></figure>
-<figure class="code"><figcaption><span class="file">run_all.sql</span><span>whole file</span></figcaption><pre class="src"><code><span class="c">-- =====================================================================</span>
-<span class="c">-- run_all.sql - the whole test case, start to finish.</span>
-<span class="c">--   preflight -&gt; install -&gt; Run A (DROP) -&gt; Run B (EXCHANGE)</span>
-<span class="c">--   -&gt; evidence (HTML charts + Oracle ASH/AWR reports in reports/)</span>
-<span class="c">--   -&gt; report (text comparison and PASS/FAIL, last so it sets the exit code)</span>
-<span class="c">-- Takes about 2 x (WARMUP + SECS) + a minute or two for table builds,</span>
-<span class="c">-- AWR snapshots and reports.</span>
-<span class="c">-- =====================================================================</span>
-<span class="k">whenever</span> <span class="k">sqlerror</span> <span class="k">exit</span> <span class="k">failure</span> <span class="k">rollback</span>
-@@setup.sql
-@@run_drop.sql
-@@run_exchange.sql
-@@evidence.sql
-@@report.sql</code></pre></figure>
-<figure class="code"><figcaption><span class="file">run_drop.sql</span><span>whole file · run_exchange.sql is identical except for &#x27;EXCHANGE&#x27;</span></figcaption><pre class="src"><code><span class="c">-- =====================================================================</span>
-<span class="c">-- run_drop.sql - Run A: ALTER TABLE ... DROP PARTITION under load.</span>
-<span class="c">-- Expected on 19c: the hot cursor is invalidated by every drop, the</span>
+<figure class="code"><figcaption><span class="file">3_test_drop.sh</span><span>whole file · the other four steps look the same</span></figcaption><pre class="src"><code><span class="c">#!/usr/bin/env bash</span>
+<span class="c"># ---------------------------------------------------------------------</span>
+<span class="c"># 3_test_drop.sh - step 3 of 5: the DROP PARTITION test.</span>
+<span class="c">#</span>
+<span class="c"># Needs the workers from step 2. Takes an AWR snapshot, opens a</span>
+<span class="c"># measurement window, drops NDDL partitions (one every SECS/(NDDL+1) s),</span>
+<span class="c"># closes the window, takes another AWR snapshot. Then writes the Oracle</span>
+<span class="c"># ASH/AWR reports and the timeline to reports/ and prints the results</span>
+<span class="c"># with their checks. The workers keep running afterwards.</span>
+<span class="c"># Exit code 0 only if every check passed.</span>
+<span class="c"># ---------------------------------------------------------------------</span>
+source "$(dirname "$0")/lib/common.sh"
+
+step "3/5  Test: DROP PARTITION under load"
+pinx_connect
+run_sql pinx 3_test_drop "@test_drop.sql"
+
+echo
+echo "Step 3 done. The workers keep running. Next: ./4_test_exchange.sh"</code></pre></figure>
+<figure class="code"><figcaption><span class="file">test_drop.sql</span><span>whole file · test_exchange.sql is identical except for &#x27;EXCHANGE&#x27;</span></figcaption><pre class="src"><code><span class="c">-- =====================================================================</span>
+<span class="c">-- test_drop.sql - step 3 (called by 3_test_drop.sh): the DROP PARTITION</span>
+<span class="c">-- test, against the workers started in step 2.</span>
+<span class="c">-- Expected on 19c: every drop invalidates the hot cursor, and the</span>
 <span class="c">-- workers pile up on "cursor: pin S wait on X" while one of them</span>
 <span class="c">-- hard-parses it again.</span>
+<span class="c">-- Afterwards: Oracle ASH/AWR reports and the timeline in reports/, and</span>
+<span class="c">-- the comparison with the latest EXCHANGE test, if there is one.</span>
 <span class="c">-- =====================================================================</span>
 @@config.sql
 <span class="k">set</span> lines <span class="n">200</span> serveroutput <span class="k">on</span> size unlimited format wrapped verify <span class="k">off</span> feedback <span class="k">off</span>
 <span class="k">whenever</span> <span class="k">sqlerror</span> <span class="k">exit</span> <span class="k">failure</span> <span class="k">rollback</span>
 
 <span class="k">prompt</span>
-<span class="k">prompt</span> ==== Run A: <span class="k">DROP</span> <span class="k">PARTITION</span> (about &amp;WARMUP + &amp;SECS s plus <span class="k">table</span> build)
-<span class="k">exec</span> pinx_lab.run_case(<span class="s">'DROP'</span>, &amp;NJOBS, &amp;NPART, &amp;NDDL, &amp;SECS, &amp;WARMUP, &amp;PARSE_MS, &amp;THINK_MS, <span class="s">'&amp;AWR'</span>)
-<span class="k">set</span> feedback <span class="k">on</span></code></pre></figure>
+<span class="k">prompt</span> ==== <span class="k">DROP</span> <span class="k">PARTITION</span> test (about &amp;WARMUP + &amp;SECS s)
+<span class="k">exec</span> pinx_lab.run_case(<span class="s">'DROP'</span>, &amp;NDDL, &amp;SECS, &amp;WARMUP, &amp;PARSE_MS, <span class="s">'&amp;AWR'</span>)
+@@evidence.sql
+@@report.sql</code></pre></figure>
+<figure class="code"><figcaption><span class="file">lib/common.sh</span><span>lines 66–95 · every step connects through this</span></figcaption><pre class="src"><code>run_sql() {
+  local who=$1 name=$2 cmd=$3 conn container="" rc
+  if [[ $who == dba ]]; then
+    conn=$DBA_CONN
+    [[ -n "$DBA_CONTAINER" ]] &amp;&amp; container="set feedback off
+alter session set container = $DBA_CONTAINER;
+set feedback on"
+  else
+    conn=$PINX_CONN
+  fi
+  local log
+  log="logs/$(date +%Y%m%d_%H%M%S)_${name}.log"
+  set +e
+  "$PINX_CLIENT" -S /nolog &lt;&lt;SQL 2&gt;&amp;1 | tee "$log"
+whenever sqlerror exit failure rollback
+whenever oserror exit failure rollback
+connect $conn
+$container
+$( [[ "$PINX_CLIENT" == sql ]] &amp;&amp; echo "@lib/sqlcl.sql" )
+$cmd
+exit success
+SQL
+  rc=${PIPESTATUS[0]}
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    echo &gt;&amp;2
+    echo "FAILED ($name), exit code $rc. Full output: $log" &gt;&amp;2
+    exit "$rc"
+  fi
+}</code></pre></figure>
 </div>
 
-<h3>The table and the hot query</h3>
-<p class="why"><code>build_table</code> recreates T for every run. Explicit 64 KB extents matter: 19c gives each new partition an 8 MB initial extent, which would have made T about 3 GB.</p>
+<h3>Table and hot query</h3>
+<p class="why"><code>build_table</code> (step 1) creates T with 64 KB extents. The 19c default initial extent for a new partition is 8 MB, which would give T a size of about 3 GB.</p>
 <div class="codes">
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 674–705 · package PINX_LAB</span></figcaption><pre class="src"><code><span class="k">procedure</span> build_table(p_npart <span class="k">in</span> <span class="k">pls_integer</span>) <span class="k">is</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 734–784 · package PINX_LAB, step 1</span></figcaption><pre class="src"><code><span class="k">procedure</span> build_table(p_npart <span class="k">in</span> <span class="k">pls_integer</span>) <span class="k">is</span>
   l_sql    <span class="k">clob</span>;
+  l_cnt    <span class="k">number</span>;
 <span class="k">begin</span>
+  <span class="k">if</span> p_npart <span class="k">not</span> between <span class="n">20</span> <span class="k">and</span> <span class="n">5000</span> <span class="k">then</span>
+    raise_application_error(-<span class="n">20021</span>, <span class="s">'NPART must be between 20 and 5000.'</span>);
+  <span class="k">end</span> <span class="k">if</span>;
+  acquire_lock;
+  <span class="c">-- Workers run a query on T: they must not be running while T is replaced.</span>
+  <span class="k">select</span> <span class="k">count</span>(*) <span class="k">into</span> l_cnt <span class="k">from</span> user_scheduler_jobs <span class="k">where</span> job_name like c_job_prefix||<span class="s">'%'</span>;
+  <span class="k">if</span> l_cnt &gt; <span class="n">0</span> <span class="k">then</span>
+    say(<span class="s">'stopping '</span>||l_cnt||<span class="s">' running workers first'</span>);
+    stop_workers(<span class="n">60</span>);
+  <span class="k">end</span> <span class="k">if</span>;
+
+  say(<span class="s">'building table T ('</span>||p_npart||<span class="s">' partitions, '</span>||p_npart * <span class="n">1000</span>||<span class="s">' rows) and T_X'</span>);
   drop_if_exists(<span class="s">'T_X'</span>);
   drop_if_exists(<span class="s">'T'</span>);
 
@@ -934,8 +1059,14 @@ PINX_CLIENT=sql ./run.sh 'pinx/&lt;password&gt;@//localhost:1521/pdb1.world' run
   <span class="c">-- The worker depends on T, which was just recreated. Regenerate (and</span>
   <span class="c">-- so compile) it now rather than letting 24 jobs race to do it.</span>
   create_worker;
+  <span class="k">select</span> <span class="k">count</span>(*) <span class="k">into</span> l_cnt <span class="k">from</span> user_tab_partitions <span class="k">where</span> table_name = <span class="s">'T'</span>;
+  say(<span class="s">'table T ready: '</span>||l_cnt||<span class="s">' partitions; T_X ready for the exchange'</span>);
+  release_lock;
+<span class="k">exception</span> <span class="k">when</span> others <span class="k">then</span>
+  release_lock;
+  <span class="k">raise</span>;
 <span class="k">end</span> build_table;</code></pre></figure>
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 655–671 · fills the worker template with the hot query</span></figcaption><pre class="src"><code><span class="k">procedure</span> create_worker <span class="k">is</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 715–731 · fills the worker template with the hot query</span></figcaption><pre class="src"><code><span class="k">procedure</span> create_worker <span class="k">is</span>
   l_status <span class="k">varchar2</span>(<span class="n">10</span>);
 <span class="k">begin</span>
   <span class="k">execute</span> <span class="k">immediate</span> <span class="k">replace</span>(c_worker_tpl, <span class="s">'{{HOT_QUERY}}'</span>,
@@ -952,14 +1083,92 @@ PINX_CLIENT=sql ./run.sh 'pinx/&lt;password&gt;@//localhost:1521/pdb1.world' run
     raise_application_error(-<span class="n">20011</span>, <span class="s">'PINX_HOT_LOOP is '</span>||l_status||<span class="s">' after generation.'</span>);
   <span class="k">end</span> <span class="k">if</span>;
 <span class="k">end</span> create_worker;</code></pre></figure>
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 336–396 · worker template; {{HOT_QUERY}} is the query above</span></figcaption><pre class="src"><code><span class="k">create</span> <span class="k">or</span> <span class="k">replace</span> <span class="k">procedure</span> pinx_hot_loop(
-  p_run_id <span class="k">in</span> <span class="k">number</span>, p_worker <span class="k">in</span> <span class="k">pls_integer</span>, p_think_ms <span class="k">in</span> <span class="k">pls_integer</span> <span class="k">default</span> <span class="n">0</span>)
+</div>
+
+<h3>Workers</h3>
+<p class="why"><code>start_workers</code> (step 2) creates one scheduler job per worker. Each job runs <code>pinx_hot_loop</code>: execute the hot query, then read the one-row table <code>PINX_CTL</code> (<code>RUN</code>, <code>MEASURE</code> or <code>STOP</code>). A test changes <code>PINX_CTL</code>; each worker takes its counter snapshot when the value changes. Each test checks that all workers are running before it starts.</p>
+<div class="codes">
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 867–935 · package PINX_LAB, step 2</span></figcaption><pre class="src"><code><span class="k">procedure</span> start_workers(p_njobs    <span class="k">in</span> <span class="k">pls_integer</span>,
+                        p_think_ms <span class="k">in</span> <span class="k">pls_integer</span>,
+                        p_parse_ms <span class="k">in</span> <span class="k">pls_integer</span>,
+                        p_minutes  <span class="k">in</span> <span class="k">pls_integer</span>) <span class="k">is</span>
+  l_cnt    <span class="k">number</span>;
+  l_status <span class="k">varchar2</span>(<span class="n">10</span>);
+  l_until  <span class="k">timestamp</span>;
+<span class="k">begin</span>
+  <span class="k">if</span> p_njobs <span class="k">not</span> between <span class="n">2</span> <span class="k">and</span> <span class="n">200</span> <span class="k">then</span>
+    raise_application_error(-<span class="n">20022</span>, <span class="s">'NJOBS must be between 2 and 200.'</span>);
+  <span class="k">end</span> <span class="k">if</span>;
+  <span class="k">if</span> p_minutes <span class="k">not</span> between <span class="n">5</span> <span class="k">and</span> <span class="n">1440</span> <span class="k">then</span>
+    raise_application_error(-<span class="n">20022</span>, <span class="s">'WORKER_MINUTES must be between 5 and 1440.'</span>);
+  <span class="k">end</span> <span class="k">if</span>;
+  acquire_lock;
+  <span class="k">begin</span>
+    <span class="k">select</span> <span class="k">count</span>(*) <span class="k">into</span> l_cnt <span class="k">from</span> user_tab_partitions <span class="k">where</span> table_name = <span class="s">'T'</span>;
+    <span class="k">if</span> l_cnt = <span class="n">0</span> <span class="k">then</span>
+      raise_application_error(-<span class="n">20014</span>, <span class="s">'Table T has not been built yet. Run ./1_build.sh first.'</span>);
+    <span class="k">end</span> <span class="k">if</span>;
+
+    <span class="k">select</span> <span class="k">count</span>(*) <span class="k">into</span> l_cnt <span class="k">from</span> user_scheduler_jobs <span class="k">where</span> job_name like c_job_prefix||<span class="s">'%'</span>;
+    <span class="k">if</span> l_cnt &gt; <span class="n">0</span> <span class="k">then</span>
+      say(<span class="s">'stopping the '</span>||l_cnt||<span class="s">' workers that are already running, to start fresh'</span>);
+      stop_workers(<span class="n">60</span>);
+    <span class="k">end</span> <span class="k">if</span>;
+
+    <span class="k">select</span> status <span class="k">into</span> l_status <span class="k">from</span> user_objects
+    <span class="k">where</span>  object_name = <span class="s">'PINX_HOT_LOOP'</span> <span class="k">and</span> object_type = <span class="s">'PROCEDURE'</span>;
+    <span class="k">if</span> l_status &lt;&gt; <span class="s">'VALID'</span> <span class="k">then</span>
+      create_worker;
+    <span class="k">end</span> <span class="k">if</span>;
+
+    l_until := systimestamp + numtodsinterval(p_minutes, <span class="s">'minute'</span>);
+    <span class="k">update</span> pinx_ctl
+    <span class="k">set</span>    run_id = <span class="k">null</span>, phase = <span class="s">'RUN'</span>, deadline = l_until, parse_ms = p_parse_ms,
+           think_ms = p_think_ms, njobs = p_njobs, started_at = systimestamp
+    <span class="k">where</span>  id = <span class="n">1</span>;
+    <span class="k">delete</span> pinx_pool;
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">1</span> .. p_njobs <span class="k">loop</span>
+      <span class="k">insert</span> <span class="k">into</span> pinx_pool (worker) <span class="k">values</span> (i);
+    <span class="k">end</span> <span class="k">loop</span>;
+    <span class="k">commit</span>;
+
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">1</span> .. p_njobs <span class="k">loop</span>
+      dbms_scheduler.create_job(
+        job_name   =&gt; job_name(i),
+        job_type   =&gt; <span class="s">'PLSQL_BLOCK'</span>,
+        job_action =&gt; <span class="s">'begin pinx_hot_loop('</span>||i||<span class="s">', '</span>||p_think_ms||<span class="s">'); end;'</span>,
+        enabled    =&gt; true,
+        auto_drop  =&gt; true,
+        comments   =&gt; <span class="s">'pinx worker '</span>||i||<span class="s">': runs the hot query until stopped'</span>);
+    <span class="k">end</span> <span class="k">loop</span>;
+    say(<span class="s">'started '</span>||p_njobs||<span class="s">' worker jobs ('</span>||job_name(<span class="n">1</span>)||<span class="s">' to '</span>||job_name(p_njobs)||
+        <span class="s">'), waiting until each has run the hot query'</span>);
+    wait_for(<span class="s">'workers ready'</span>, <span class="s">'select count(*) from pinx_pool where ready_at is not null'</span>,
+             <span class="k">null</span>, p_njobs, <span class="n">120</span>);
+    say(<span class="s">'all '</span>||p_njobs||<span class="s">' workers are running the hot query ('</span>||p_think_ms||
+        <span class="s">' ms think time between executions)'</span>);
+    say(<span class="s">'they stop by themselves at '</span>||to_char(l_until, <span class="s">'YYYY-MM-DD HH24:MI:SS'</span>)||
+        <span class="s">' ('</span>||p_minutes||<span class="s">' min), or when ./5_cleanup.sh or stop_workers.sql stops them'</span>);
+    release_lock;
+  <span class="k">exception</span> <span class="k">when</span> others <span class="k">then</span>
+    <span class="k">rollback</span>;
+    <span class="k">begin</span> stop_workers(<span class="n">30</span>); <span class="k">exception</span> <span class="k">when</span> others <span class="k">then</span> <span class="k">null</span>; <span class="k">end</span>;
+    release_lock;
+    <span class="k">raise</span>;
+  <span class="k">end</span>;
+<span class="k">end</span> start_workers;</code></pre></figure>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 370–452 · worker template; {{HOT_QUERY}} is the query above</span></figcaption><pre class="src"><code><span class="k">create</span> <span class="k">or</span> <span class="k">replace</span> <span class="k">procedure</span> pinx_hot_loop(
+  p_worker <span class="k">in</span> <span class="k">pls_integer</span>, p_think_ms <span class="k">in</span> <span class="k">pls_integer</span> <span class="k">default</span> <span class="n">0</span>)
   <span class="k">authid</span> <span class="k">definer</span>
 <span class="k">as</span>
   <span class="c">-- GENERATED by pinx_lab.create_worker - do not edit; rerun setup.sql.</span>
   <span class="c">--</span>
   <span class="c">-- The worker. Separate from the package because it is the only code</span>
-  <span class="c">-- with a static dependency on T. Runs as a DBMS_SCHEDULER job.</span>
+  <span class="c">-- with a static dependency on T. Runs as a DBMS_SCHEDULER job, started</span>
+  <span class="c">-- by start_workers, and keeps running the hot query until PINX_CTL</span>
+  <span class="c">-- says STOP or its deadline passes. When a test opens a measurement</span>
+  <span class="c">-- window (phase MEASURE) the worker snapshots its own counters, and</span>
+  <span class="c">-- again when the window closes.</span>
   <span class="c">-- The hot query reads only P1 of T (id &lt; 1000 prunes statically).</span>
   <span class="c">-- pinx_parse_marker(a.id) &gt;= 0 is always true but makes every hard</span>
   <span class="c">-- parse cost PARSE_MS of CPU (see pinx_parse_cost). When the cursor is</span>
@@ -972,53 +1181,82 @@ PINX_CLIENT=sql ./run.sh 'pinx/&lt;password&gt;@//localhost:1521/pdb1.world' run
   l_ctl_run  <span class="k">number</span>;
   l_phase    <span class="k">varchar2</span>(<span class="n">10</span>);
   l_deadline <span class="k">timestamp</span>;
-  l_ready    <span class="k">boolean</span> := false;
-  l_begun    <span class="k">boolean</span> := false;
-  l_execs    <span class="k">pls_integer</span> := <span class="n">0</span>;
+  l_run      <span class="k">number</span>;                 <span class="c">-- the test run being measured, if any</span>
+  l_execs    <span class="k">pls_integer</span> := <span class="n">0</span>;       <span class="c">-- executions inside that window</span>
+  l_total    <span class="k">number</span> := <span class="n">0</span>;            <span class="c">-- executions since the worker started</span>
+  l_beat     <span class="k">timestamp</span>;
   l_batch    <span class="k">pls_integer</span> := <span class="k">case</span> <span class="k">when</span> p_think_ms &gt; <span class="n">0</span> <span class="k">then</span> <span class="n">1</span> <span class="k">else</span> <span class="n">20</span> <span class="k">end</span>;
+
+  <span class="k">procedure</span> leave_window <span class="k">is</span>
+  <span class="k">begin</span>
+    pinx_lab.worker_snap(l_run, p_worker, <span class="s">'E'</span>);
+    <span class="k">update</span> pinx_worker <span class="k">set</span> end_at = systimestamp, execs_window = l_execs
+    <span class="k">where</span>  run_id = l_run <span class="k">and</span> worker = p_worker;
+    <span class="k">commit</span>;
+    l_run := <span class="k">null</span>;
+  <span class="k">end</span> leave_window;
 <span class="k">begin</span>
   dbms_application_info.set_module(pinx_lab.c_module, <span class="s">'W'</span>||p_worker);
-  <span class="k">update</span> pinx_worker <span class="k">set</span> sid = sys_context(<span class="s">'userenv'</span>, <span class="s">'sid'</span>)
-  <span class="k">where</span>  run_id = p_run_id <span class="k">and</span> worker = p_worker;
+  <span class="k">update</span> pinx_pool <span class="k">set</span> sid = sys_context(<span class="s">'userenv'</span>, <span class="s">'sid'</span>), started_at = systimestamp
+  <span class="k">where</span>  worker = p_worker;
   <span class="k">commit</span>;
 
   <span class="k">loop</span>
     <span class="k">for</span> k <span class="k">in</span> <span class="n">1</span> .. l_batch <span class="k">loop</span>
       {{HOT_QUERY}};
-      <span class="k">if</span> l_begun <span class="k">then</span> l_execs := l_execs + <span class="n">1</span>; <span class="k">end</span> <span class="k">if</span>;
+      l_execs := l_execs + <span class="n">1</span>;
+      l_total := l_total + <span class="n">1</span>;
       <span class="k">if</span> p_think_ms &gt; <span class="n">0</span> <span class="k">then</span> dbms_session.sleep(p_think_ms / <span class="n">1000</span>); <span class="k">end</span> <span class="k">if</span>;
     <span class="k">end</span> <span class="k">loop</span>;
 
     <span class="k">select</span> run_id, phase, deadline <span class="k">into</span> l_ctl_run, l_phase, l_deadline
     <span class="k">from</span>   pinx_ctl <span class="k">where</span> id = <span class="n">1</span>;
-    <span class="k">exit</span> <span class="k">when</span> l_ctl_run <span class="k">is</span> <span class="k">null</span> <span class="k">or</span> l_ctl_run &lt;&gt; p_run_id
-           <span class="k">or</span> l_phase = <span class="s">'STOP'</span> <span class="k">or</span> systimestamp &gt; l_deadline;
+    <span class="k">exit</span> <span class="k">when</span> l_phase = <span class="s">'STOP'</span> <span class="k">or</span> systimestamp &gt; l_deadline;
 
-    <span class="k">if</span> <span class="k">not</span> l_ready <span class="k">then</span>
-      <span class="k">update</span> pinx_worker <span class="k">set</span> ready_at = systimestamp
-      <span class="k">where</span>  run_id = p_run_id <span class="k">and</span> worker = p_worker;
-      <span class="k">commit</span>;
-      l_ready := true;
+    <span class="c">-- The window this worker was measuring has closed (or was abandoned).</span>
+    <span class="k">if</span> l_run <span class="k">is</span> <span class="k">not</span> <span class="k">null</span> <span class="k">and</span> (l_phase &lt;&gt; <span class="s">'MEASURE'</span> <span class="k">or</span> l_ctl_run &lt;&gt; l_run) <span class="k">then</span>
+      leave_window;
     <span class="k">end</span> <span class="k">if</span>;
-    <span class="k">if</span> l_phase = <span class="s">'MEASURE'</span> <span class="k">and</span> <span class="k">not</span> l_begun <span class="k">then</span>
-      pinx_lab.worker_snap(p_run_id, p_worker, <span class="s">'B'</span>);
-      l_begun := true;
+    <span class="c">-- A test opened a window: baseline snapshot, then count executions.</span>
+    <span class="k">if</span> l_run <span class="k">is</span> <span class="k">null</span> <span class="k">and</span> l_phase = <span class="s">'MEASURE'</span> <span class="k">then</span>
+      <span class="k">insert</span> <span class="k">into</span> pinx_worker (run_id, worker, sid, ready_at)
+      <span class="k">values</span> (l_ctl_run, p_worker, sys_context(<span class="s">'userenv'</span>, <span class="s">'sid'</span>), systimestamp);
+      pinx_lab.worker_snap(l_ctl_run, p_worker, <span class="s">'B'</span>);      <span class="c">-- commits</span>
+      l_run   := l_ctl_run;
+      l_execs := <span class="n">0</span>;
+    <span class="k">end</span> <span class="k">if</span>;
+    <span class="c">-- Heartbeat every 2 s.</span>
+    <span class="k">if</span> l_beat <span class="k">is</span> <span class="k">null</span> <span class="k">or</span> systimestamp - l_beat &gt; <span class="k">interval</span> <span class="s">'2'</span> second <span class="k">then</span>
+      l_beat := systimestamp;
+      <span class="k">update</span> pinx_pool <span class="k">set</span> ready_at = <span class="k">nvl</span>(ready_at, l_beat), last_beat = l_beat, execs = l_total
+      <span class="k">where</span>  worker = p_worker;
+      <span class="k">commit</span>;
     <span class="k">end</span> <span class="k">if</span>;
   <span class="k">end</span> <span class="k">loop</span>;
 
-  <span class="k">if</span> l_begun <span class="k">then</span>
-    pinx_lab.worker_snap(p_run_id, p_worker, <span class="s">'E'</span>);
+  <span class="k">if</span> l_run <span class="k">is</span> <span class="k">not</span> <span class="k">null</span> <span class="k">then</span>
+    leave_window;
   <span class="k">end</span> <span class="k">if</span>;
-  <span class="k">update</span> pinx_worker <span class="k">set</span> end_at = systimestamp, execs_window = l_execs
-  <span class="k">where</span>  run_id = p_run_id <span class="k">and</span> worker = p_worker;
+  <span class="k">update</span> pinx_pool <span class="k">set</span> ended_at = systimestamp, execs = l_total <span class="k">where</span> worker = p_worker;
   <span class="k">commit</span>;
 <span class="k">end</span> pinx_hot_loop;</code></pre></figure>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 1008–1018 · start of pinx_lab.run_case, steps 3 and 4</span></figcaption><pre class="src"><code><span class="c">-- The workers from step 2 must be running, every one of them.</span>
+<span class="k">select</span> njobs, think_ms, phase <span class="k">into</span> l_njobs, l_think, l_phase <span class="k">from</span> pinx_ctl <span class="k">where</span> id = <span class="n">1</span>;
+<span class="k">select</span> <span class="k">count</span>(*) <span class="k">into</span> l_running <span class="k">from</span> user_scheduler_running_jobs
+<span class="k">where</span>  job_name like c_job_prefix||<span class="s">'%'</span>;
+<span class="k">select</span> <span class="k">count</span>(*) <span class="k">into</span> l_alive <span class="k">from</span> pinx_pool
+<span class="k">where</span>  ended_at <span class="k">is</span> <span class="k">null</span> <span class="k">and</span> last_beat &gt; systimestamp - <span class="k">interval</span> <span class="s">'15'</span> second;
+<span class="k">if</span> l_phase &lt;&gt; <span class="s">'RUN'</span> <span class="k">or</span> l_njobs <span class="k">is</span> <span class="k">null</span> <span class="k">or</span> l_running &lt; l_njobs <span class="k">or</span> l_alive &lt; l_njobs <span class="k">then</span>
+  raise_application_error(-<span class="n">20013</span>,
+    <span class="s">'The workers are not running ('</span>||l_running||<span class="s">' worker jobs running, '</span>||<span class="k">nvl</span>(l_alive, <span class="n">0</span>)||
+    <span class="s">' with a recent heartbeat, '</span>||<span class="k">nvl</span>(l_njobs, <span class="n">0</span>)||<span class="s">' expected). Start them with ./2_start_workers.sh.'</span>);
+<span class="k">end</span> <span class="k">if</span>;</code></pre></figure>
 </div>
 
-<h3>The DDL under test</h3>
-<p class="why">The controller forces <code>cursor_invalidation = immediate</code> (the 19c default) so that a system-level setting cannot change the outcome. Before each DDL it records the cursor's signature, which then serves as the "settled" state of the previous DDL.</p>
+<h3>DDL</h3>
+<p class="why">The controller sets <code>cursor_invalidation = immediate</code> (the 19c default) in its session, so a system-level setting does not affect the result. The cursor signature recorded before each DDL is also the settled state of the previous DDL.</p>
 <div class="codes">
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 937–965 · inside pinx_lab.run_case</span></figcaption><pre class="src"><code><span class="c">-- The DDL. IMMEDIATE is the 19c default; set it explicitly so a</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 1097–1125 · inside pinx_lab.run_case</span></figcaption><pre class="src"><code><span class="c">-- The DDL. IMMEDIATE is the 19c default; set it explicitly so a</span>
 <span class="c">-- system-level DEFERRED setting cannot change the result.</span>
 <span class="k">execute</span> <span class="k">immediate</span> <span class="s">'alter session set cursor_invalidation = immediate'</span>;
 <span class="k">execute</span> <span class="k">immediate</span> <span class="s">'alter session set ddl_lock_timeout = 60'</span>;
@@ -1030,10 +1268,10 @@ l_interval := round(p_secs / (p_nddl + <span class="n">1</span>), <span class="n
   l_sig := cursor_sig(l_sql_id);
   <span class="k">update</span> pinx_ddl <span class="k">set</span> cursor_settled = l_sig <span class="k">where</span> run_id = l_run <span class="k">and</span> seq = i - <span class="n">1</span>;
   l_sql := <span class="k">case</span> l_kind
-             <span class="k">when</span> <span class="s">'DROP'</span> <span class="k">then</span>
-               <span class="s">'alter table t drop partition p'</span>||(p_npart - i + <span class="n">1</span>)||<span class="s">' update indexes'</span>
-             <span class="k">else</span>
-               <span class="s">'alter table t exchange partition p'</span>||p_npart||
+             <span class="k">when</span> <span class="s">'DROP'</span> <span class="k">then</span>             <span class="c">-- the highest partition still there</span>
+               <span class="s">'alter table t drop partition '</span>||lower(l_parts(i))||<span class="s">' update indexes'</span>
+             <span class="k">else</span>                         <span class="c">-- always the highest partition</span>
+               <span class="s">'alter table t exchange partition '</span>||lower(l_parts(<span class="n">1</span>))||
                <span class="s">' with table t_x including indexes without validation'</span>
            <span class="k">end</span>;
   l_t0 := systimestamp;
@@ -1047,7 +1285,7 @@ l_interval := round(p_secs / (p_nddl + <span class="n">1</span>), <span class="n
 dbms_session.sleep(l_interval);       <span class="c">-- quiet tail: let the last storm finish</span>
 l_sig := cursor_sig(l_sql_id);
 <span class="k">update</span> pinx_ddl <span class="k">set</span> cursor_settled = l_sig <span class="k">where</span> run_id = l_run <span class="k">and</span> seq = p_nddl;</code></pre></figure>
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 751–759</span></figcaption><pre class="src"><code><span class="k">function</span> cursor_sig(p_sql_id <span class="k">in</span> <span class="k">varchar2</span>) <span class="k">return</span> <span class="k">varchar2</span> <span class="k">is</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 830–838</span></figcaption><pre class="src"><code><span class="k">function</span> cursor_sig(p_sql_id <span class="k">in</span> <span class="k">varchar2</span>) <span class="k">return</span> <span class="k">varchar2</span> <span class="k">is</span>
   l_sig <span class="k">varchar2</span>(<span class="n">1000</span>);
 <span class="k">begin</span>
   <span class="k">select</span> <span class="k">substr</span>(<span class="k">listagg</span>(rawtohex(child_address)||<span class="s">':'</span>||loads||<span class="s">':'</span>||invalidations, <span class="s">' '</span>)
@@ -1058,10 +1296,10 @@ l_sig := cursor_sig(l_sql_id);
 <span class="k">end</span> cursor_sig;</code></pre></figure>
 </div>
 
-<h3>Measuring the workers</h3>
-<p class="why">Each worker snapshots its own counters with one <code>INSERT … SELECT</code>. Oracle parses that statement before it reads the counters, so the snapshot never counts its own parse. That is why Run B shows exactly 0 hard parses.</p>
+<h3>Worker counters</h3>
+<p class="why">Each worker snapshot is one <code>INSERT … SELECT</code>. The statement is parsed before it reads the counters, so the snapshot does not count its own parse. The EXCHANGE test therefore shows 0 hard parses.</p>
 <div class="codes">
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 708–723</span></figcaption><pre class="src"><code><span class="k">procedure</span> worker_snap(p_run_id <span class="k">in</span> <span class="k">number</span>, p_worker <span class="k">in</span> <span class="k">pls_integer</span>, p_phase <span class="k">in</span> <span class="k">varchar2</span>) <span class="k">is</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 787–802</span></figcaption><pre class="src"><code><span class="k">procedure</span> worker_snap(p_run_id <span class="k">in</span> <span class="k">number</span>, p_worker <span class="k">in</span> <span class="k">pls_integer</span>, p_phase <span class="k">in</span> <span class="k">varchar2</span>) <span class="k">is</span>
 <span class="k">begin</span>
   <span class="c">-- One INSERT..SELECT on purpose: the statement is parsed before it</span>
   <span class="c">-- reads the counters, so the snapshot does not count its own parse.</span>
@@ -1079,9 +1317,9 @@ l_sig := cursor_sig(l_sql_id);
 <span class="k">end</span> worker_snap;</code></pre></figure>
 </div>
 
-<h3>The parse cost</h3>
+<h3>Parse cost</h3>
 <div class="codes">
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 228–273 · installed before the package</span></figcaption><pre class="src"><code><span class="k">create</span> <span class="k">or</span> <span class="k">replace</span> <span class="k">function</span> pinx_parse_marker(p <span class="k">in</span> <span class="k">number</span>) <span class="k">return</span> <span class="k">number</span> <span class="k">deterministic</span> <span class="k">is</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 253–298 · installed before the package</span></figcaption><pre class="src"><code><span class="k">create</span> <span class="k">or</span> <span class="k">replace</span> <span class="k">function</span> pinx_parse_marker(p <span class="k">in</span> <span class="k">number</span>) <span class="k">return</span> <span class="k">number</span> <span class="k">deterministic</span> <span class="k">is</span>
 <span class="k">begin</span>
   <span class="k">return</span> p;
 <span class="k">end</span> pinx_parse_marker;
@@ -1129,16 +1367,16 @@ l_sig := cursor_sig(l_sql_id);
 /</code></pre></figure>
 </div>
 
-<h3>AWR snapshots and Oracle's reports</h3>
+<h3>AWR snapshots and Oracle reports</h3>
 <div class="codes">
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 788–794 · dynamic SQL: compiles without the grant</span></figcaption><pre class="src"><code><span class="k">function</span> awr_snapshot <span class="k">return</span> <span class="k">number</span> <span class="k">is</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 940–946 · dynamic SQL: compiles without the grant</span></figcaption><pre class="src"><code><span class="k">function</span> awr_snapshot <span class="k">return</span> <span class="k">number</span> <span class="k">is</span>
   l_snap <span class="k">number</span>;
 <span class="k">begin</span>
   <span class="k">execute</span> <span class="k">immediate</span> <span class="s">'begin :s := dbms_workload_repository.create_snapshot(); end;'</span>
     <span class="k">using</span> <span class="k">out</span> l_snap;
   <span class="k">return</span> l_snap;
 <span class="k">end</span> awr_snapshot;</code></pre></figure>
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 908–920 · inside pinx_lab.run_case</span></figcaption><pre class="src"><code><span class="c">-- AWR snapshot just before the window (and one just after it), so</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 1068–1080 · inside pinx_lab.run_case</span></figcaption><pre class="src"><code><span class="c">-- AWR snapshot just before the window (and one just after it), so</span>
 <span class="c">-- an AWR report between the two covers exactly this run.</span>
 <span class="k">if</span> l_awr = <span class="s">'Y'</span> <span class="k">then</span>
   <span class="k">begin</span>
@@ -1150,7 +1388,7 @@ l_sig := cursor_sig(l_sql_id);
     l_awr := <span class="s">'N'</span>;
   <span class="k">end</span>;
 <span class="k">end</span> <span class="k">if</span>;</code></pre></figure>
-<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 991–1007 · inside pinx_lab.run_case</span></figcaption><pre class="src"><code><span class="c">-- Keep the raw samples: the in-memory ASH buffer wraps eventually.</span>
+<figure class="code"><figcaption><span class="file">setup.sql</span><span>lines 1148–1164 · inside pinx_lab.run_case</span></figcaption><pre class="src"><code><span class="c">-- Keep the raw samples: the in-memory ASH buffer wraps eventually.</span>
 <span class="k">execute</span> <span class="k">immediate</span> <span class="s">q'[
   insert into pinx_ash_sample
     (run_id, sample_id, sample_time, session_id, session_serial#, module, action,
@@ -1167,7 +1405,7 @@ l_sig := cursor_sig(l_sql_id);
 <span class="k">from</span>   pinx_ash_sample
 <span class="k">where</span>  run_id = l_run <span class="k">and</span> module = c_module
 <span class="k">group</span>  <span class="k">by</span> <span class="k">nvl</span>(event, <span class="s">'ON CPU'</span>);</code></pre></figure>
-<figure class="code"><figcaption><span class="file">lib/oracle_reports.sql</span><span>whole file · called by evidence.sql for each run</span></figcaption><pre class="src"><code><span class="c">-- =====================================================================</span>
+<figure class="code"><figcaption><span class="file">lib/oracle_reports.sql</span><span>whole file · called by evidence.sql for each test</span></figcaption><pre class="src"><code><span class="c">-- =====================================================================</span>
 <span class="c">-- lib/oracle_reports.sql &lt;run_id&gt; - called by evidence.sql.</span>
 <span class="c">-- Spools Oracle's own ASH report (the run's measurement window) and AWR</span>
 <span class="c">-- report (the snapshots taken right before / after that window) for one</span>
@@ -1210,67 +1448,75 @@ l_sig := cursor_sig(l_sql_id);
 </div>
 
 <h3>Controller output</h3>
-<p>The console output of <code>run_case</code> for the run at 20:00 (SQL*Plus, same settings), unedited:</p>
+<p>Output of <code>run_case</code> during both tests, unedited:</p>
 <figure class="code">
-  <figcaption><span class="file">run_drop.sql, run_exchange.sql output</span><span>SQL*Plus · 4 Nov 2026 20:00</span></figcaption>
-  <pre class="src console"><code>==== Run A: DROP PARTITION (about 10 + 60 s plus table build)
-20:00:15  ---- DROP run: 24 workers, 400 partitions, 2000 ms per hard parse, 20 ms think time, 10 DDLs over 60 s (+10 s warm-up)
-20:00:15  building table T (400 partitions, 400000 rows)
-20:00:29  started 24 worker jobs, waiting for all of them to run the hot query
-20:00:31  all workers running; warming up for 10 s
-20:01:00  AWR snapshot 30 (before)
-20:01:01  window open (hot cursor sql_id 5wrhf4jjs6mhs)
-20:01:07  DDL 1/10 (44.4 ms): alter table t drop partition p400 update indexes
-20:01:12  DDL 2/10 (16.9 ms): alter table t drop partition p399 update indexes
-20:01:17  DDL 3/10 (18.7 ms): alter table t drop partition p398 update indexes
-20:01:23  DDL 4/10 (30.3 ms): alter table t drop partition p397 update indexes
-20:01:28  DDL 5/10 (25.6 ms): alter table t drop partition p396 update indexes
-20:01:34  DDL 6/10 (18.4 ms): alter table t drop partition p395 update indexes
-20:01:39  DDL 7/10 (26.3 ms): alter table t drop partition p394 update indexes
-20:01:45  DDL 8/10 (19.5 ms): alter table t drop partition p393 update indexes
-20:01:50  DDL 9/10 (29.7 ms): alter table t drop partition p392 update indexes
-20:01:56  DDL 10/10 (28.7 ms): alter table t drop partition p391 update indexes
-20:02:01  window closed
-20:02:02  AWR snapshot 31 (after)
-20:02:02  stopping workers
-20:02:03  ASH: 3 events captured
-20:02:03  DROP run 1 complete
+  <figcaption><span class="file">3_test_drop.sh, 4_test_exchange.sh output</span><span>SQLcl · 5 Nov 2026</span></figcaption>
+  <pre class="src console"><code>==== DROP PARTITION test (about 10 + 60 s)
+08:33:21  ---- DROP test: 24 workers already running, 400 partitions, 2000 ms per hard parse, 10 DDLs over 60 s (+10 s settle)
+08:33:21  workers settling for 10 s
+08:33:35  AWR snapshot 38 (before)
+08:33:36  window open (hot cursor sql_id 5wrhf4jjs6mhs)
+08:33:41  DDL 1/10 (76.1 ms): alter table t drop partition p400 update indexes
+08:33:47  DDL 2/10 (66.2 ms): alter table t drop partition p399 update indexes
+08:33:52  DDL 3/10 (38.1 ms): alter table t drop partition p398 update indexes
+08:33:58  DDL 4/10 (30.4 ms): alter table t drop partition p397 update indexes
+08:34:03  DDL 5/10 (33.4 ms): alter table t drop partition p396 update indexes
+08:34:09  DDL 6/10 (29.5 ms): alter table t drop partition p395 update indexes
+08:34:14  DDL 7/10 (31.8 ms): alter table t drop partition p394 update indexes
+08:34:20  DDL 8/10 (34 ms): alter table t drop partition p393 update indexes
+08:34:25  DDL 9/10 (31.9 ms): alter table t drop partition p392 update indexes
+08:34:31  DDL 10/10 (39.8 ms): alter table t drop partition p391 update indexes
+08:34:36  window closed
+08:34:37  AWR snapshot 39 (after)
+08:34:37  ASH: 3 events captured
+08:34:37  DROP test run 1 complete; the workers keep running
 
-==== Run B: EXCHANGE PARTITION (about 10 + 60 s plus table build)
-20:02:03  ---- EXCHANGE run: 24 workers, 400 partitions, 2000 ms per hard parse, 20 ms think time, 10 DDLs over 60 s (+10 s warm-up)
-20:02:03  building table T (400 partitions, 400000 rows)
-20:02:29  started 24 worker jobs, waiting for all of them to run the hot query
-20:02:31  all workers running; warming up for 10 s
-20:02:41  AWR snapshot 32 (before)
-20:02:42  window open (hot cursor sql_id 5wrhf4jjs6mhs)
-20:02:47  DDL 1/10 (41.9 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:02:53  DDL 2/10 (10.3 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:02:58  DDL 3/10 (9.2 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:03:03  DDL 4/10 (7.6 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:03:09  DDL 5/10 (7.6 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:03:14  DDL 6/10 (9.5 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:03:20  DDL 7/10 (8.8 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:03:25  DDL 8/10 (8.8 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:03:31  DDL 9/10 (8.4 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:03:36  DDL 10/10 (8.6 ms): alter table t exchange partition p400 with table t_x including indexes without validation
-20:03:42  window closed
-20:03:42  AWR snapshot 33 (after)
-20:03:42  stopping workers
-20:03:42  ASH: 1 events captured
-20:03:42  EXCHANGE run 2 complete</code></pre>
+==== EXCHANGE PARTITION test (about 10 + 60 s)
+08:34:59  ---- EXCHANGE test: 24 workers already running, 390 partitions, 2000 ms per hard parse, 10 DDLs over 60 s (+10 s settle)
+08:34:59  workers settling for 10 s
+08:35:10  AWR snapshot 40 (before)
+08:35:11  window open (hot cursor sql_id 5wrhf4jjs6mhs)
+08:35:16  DDL 1/10 (35.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:22  DDL 2/10 (11.6 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:27  DDL 3/10 (10.4 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:33  DDL 4/10 (13.3 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:38  DDL 5/10 (9.9 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:44  DDL 6/10 (11.6 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:49  DDL 7/10 (9.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:35:55  DDL 8/10 (10.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:36:00  DDL 9/10 (13.1 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:36:05  DDL 10/10 (14.4 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+08:36:11  window closed
+08:36:11  AWR snapshot 41 (after)
+08:36:12  ASH: 1 events captured
+08:36:12  EXCHANGE test run 2 complete; the workers keep running</code></pre>
 </figure>
 
 <!-- ================================================================ -->
-<h2 id="run">Run it yourself</h2>
+<h2 id="run">Procedure</h2>
 <ol>
-  <li>On a 19c <strong>test</strong> database, connect as a DBA inside the target PDB and run <code>@admin/create_user.sql &lt;password&gt;</code>. It creates the schema <code>PINX</code> with the direct grants the harness needs (roles do not work inside definer-rights PL/SQL or scheduler jobs).</li>
-  <li>Run <code>./run.sh pinx@//host:1521/pdb run_all</code>. It installs the harness, runs both cases, writes the evidence to <code>reports/</code>, and exits non-zero if any check fails. A full run takes 4 to 5 minutes.</li>
-  <li>Open <code>reports/pinx_timeline_r&lt;A&gt;_r&lt;B&gt;.html</code>, and the ASH and AWR reports linked from it.</li>
-  <li>Remove everything with <code>./run.sh … cleanup</code> and, as a DBA, <code>@admin/drop_user.sql</code>.</li>
+  <li>On a 19c test database, set the connections in <code>connection.conf</code>: PDB service; DBA login (<code>/ as sysdba</code> on the database host, or a user such as <code>SYSTEM</code>).</li>
+  <li><code>./1_build.sh</code>: creates schema <code>PINX</code> with direct grants (roles are disabled in definer-rights PL/SQL and in scheduler jobs), installs the harness, builds the table.</li>
+  <li><code>./2_start_workers.sh</code>. Worker status: <code>./run.sh status</code>.</li>
+  <li><code>./3_test_drop.sh</code>, then <code>./4_test_exchange.sh</code>. Each writes its reports to <code>reports/</code> and exits non-zero if a check fails. Duration: about 90 s each.</li>
+  <li>Results: <code>reports/pinx_timeline_r&lt;A&gt;_r&lt;B&gt;.html</code> and the ASH and AWR reports linked from it.</li>
+  <li><code>./5_cleanup.sh</code>: stops the workers, drops the user.</li>
 </ol>
-<figure class="code"><figcaption><span class="file">admin/create_user.sql</span><span>lines 48–81 · run once as a DBA in the PDB</span></figcaption><pre class="src"><code><span class="k">create</span> user &amp;PINX_USER identified <span class="k">by</span> "&amp;PINX_PASS"
-  <span class="k">default</span> tablespace &amp;PINX_TBS
-  quota 500m <span class="k">on</span> &amp;PINX_TBS;
+<figure class="code"><figcaption><span class="file">admin/create_user.sql</span><span>lines 49–96 · run by 1_build.sh as the DBA</span></figcaption><pre class="src"><code><span class="k">declare</span>
+  n <span class="k">number</span>;
+<span class="k">begin</span>
+  <span class="k">select</span> <span class="k">count</span>(*) <span class="k">into</span> n <span class="k">from</span> dba_users <span class="k">where</span> username = upper(<span class="s">'&amp;PINX_USER'</span>);
+  <span class="k">if</span> n = <span class="n">0</span> <span class="k">then</span>
+    <span class="k">execute</span> <span class="k">immediate</span> <span class="s">'create user &amp;PINX_USER identified by "&amp;PINX_PASS" '</span>||
+                      <span class="s">'default tablespace &amp;PINX_TBS quota 500m on &amp;PINX_TBS'</span>;
+    dbms_output.put_line(<span class="s">'User &amp;PINX_USER created (default tablespace &amp;PINX_TBS).'</span>);
+  <span class="k">else</span>
+    <span class="k">execute</span> <span class="k">immediate</span> <span class="s">'alter user &amp;PINX_USER identified by "&amp;PINX_PASS" account unlock '</span>||
+                      <span class="s">'quota 500m on &amp;PINX_TBS'</span>;
+    dbms_output.put_line(<span class="s">'User &amp;PINX_USER already exists: kept, password set to the one given.'</span>);
+  <span class="k">end</span> <span class="k">if</span>;
+<span class="k">end</span>;
+/
 
 <span class="c">-- System privileges</span>
 <span class="k">grant</span> <span class="k">create</span> <span class="k">session</span>   <span class="k">to</span> &amp;PINX_USER;
@@ -1292,6 +1538,8 @@ l_sig := cursor_sig(l_sql_id);
 
 <span class="c">-- Dynamic performance views read by the harness (must be direct grants)</span>
 <span class="k">grant</span> <span class="k">select</span> <span class="k">on</span> sys.v_$sql                    <span class="k">to</span> &amp;PINX_USER;
+<span class="c">-- V$SESSION: status.sql shows what each worker session is doing</span>
+<span class="k">grant</span> <span class="k">select</span> <span class="k">on</span> sys.v_$session                <span class="k">to</span> &amp;PINX_USER;
 <span class="k">grant</span> <span class="k">select</span> <span class="k">on</span> sys.v_$session_event          <span class="k">to</span> &amp;PINX_USER;
 <span class="k">grant</span> <span class="k">select</span> <span class="k">on</span> sys.v_$mystat                 <span class="k">to</span> &amp;PINX_USER;
 <span class="k">grant</span> <span class="k">select</span> <span class="k">on</span> sys.v_$statname               <span class="k">to</span> &amp;PINX_USER;
@@ -1302,119 +1550,126 @@ l_sig := cursor_sig(l_sql_id);
 <span class="c">-- Only queried when CONTROL_MANAGEMENT_PACK_ACCESS includes DIAGNOSTIC</span>
 <span class="c">-- (Diagnostics Pack licence). Harmless to grant either way.</span>
 <span class="k">grant</span> <span class="k">select</span> <span class="k">on</span> sys.v_$active_session_history <span class="k">to</span> &amp;PINX_USER;</code></pre></figure>
-<p class="note">ASH, AWR snapshots and the ASH/AWR reports need the Diagnostics Pack. With <code>AWR = AUTO</code> the harness uses them only when <code>control_management_pack_access</code> includes <code>DIAGNOSTIC</code>. The pass/fail checks rely on the sessions' own counters and need no licence.</p>
+<p class="note">ASH, AWR snapshots and the ASH/AWR reports require the Diagnostics Pack. With <code>AWR = AUTO</code> they are used only when <code>control_management_pack_access</code> includes <code>DIAGNOSTIC</code>. The pass/fail checks use session counters and require no licence.</p>
 
 <!-- ================================================================ -->
-<h2 id="caveats">Limits and caveats</h2>
+<h2 id="caveats">Limitations</h2>
 <ul>
-  <li>The test box has 2 CPUs. On a bigger machine the hard parse competes less for CPU, but the pile-up still lasts as long as one hard parse, and every session that needs the cursor still waits.</li>
-  <li>The 2-second parse cost is deliberate (<code>PARSE_MS</code>). With <code>PARSE_MS = 0</code>, every DROP still invalidates the cursor and still causes waits that the counters prove, but each pile-up lasts only about 200 ms.</li>
-  <li>The hot query prunes statically to P1, a partition the exchange never touches. Queries that read the exchanged partition itself were not tested.</li>
-  <li>In a separate single-session probe, <code>TRUNCATE PARTITION</code> also left the cursor valid. Only <code>DROP PARTITION</code> invalidated it. The truncate case is not part of the automated checks.</li>
-  <li>Removing the emptied partition afterwards is a <code>DROP PARTITION</code> too. Schedule it for a quiet period, or keep empty partitions until one comes.</li>
+  <li>Test host: 2 CPUs. With more CPUs the hard parse has less CPU contention; the wait still lasts one hard parse and affects every session that executes the cursor.</li>
+  <li>The parse cost of 2 s is set by <code>PARSE_MS</code>. With <code>PARSE_MS = 0</code>, every DROP still invalidates the cursor and causes waits recorded in the session counters; each wait lasts about 200 ms.</li>
+  <li>The hot query prunes statically to P1. Queries that read the exchanged partition were not tested.</li>
+  <li><code>TRUNCATE PARTITION</code> did not invalidate the cursor in a separate single-session test. It is not part of the automated checks.</li>
+  <li>Dropping the empty partition after the exchange is a <code>DROP PARTITION</code> and invalidates dependent cursors.</li>
   <li>Measured on Oracle 19.27 only. The harness refuses older releases and warns on newer ones.</li>
 </ul>
 
 <footer>
-  Project: <code>partition_exchange</code>. Scripts: <code>setup.sql</code>, <code>run_all.sql</code>, <code>evidence.sql</code>, <code>report.sql</code>. Measurements: Oracle Database 19.27.0.0.0, PDB1, 4 November 2026.
+  Project: <code>partition_exchange</code>. Scripts: <code>1_build.sh</code> to <code>5_cleanup.sh</code>, <code>setup.sql</code>, <code>evidence.sql</code>, <code>report.sql</code>. Measurements: Oracle Database 19.27.0.0.0, PDB1, 5 November 2026.
 </footer>
 </main>
 
 <script>
-window.PINX = {generated: "2026-11-04 20:10", runs: [], checks: []};
-PINX.runs.push({id: 1, kind: "DROP", window: 60.2, njobs: 24, npart: 400, nddl: 10, cpu: 2, ver: "19.27.0.0.0", con: "PDB1", ashok: "Y", awr: "Y", snapb: 34, snape: 35, ashfile: "pinx_run1_drop_ash.html", awrfile: "pinx_run1_drop_awr.html",
-  m: {inval: 10, hp: 40, pinw: 230, pinms: 459912, ashpin: 460, eps: 793},
+window.PINX = {generated: "2026-11-05 08:36", runs: [], checks: []};
+PINX.runs.push({id: 1, kind: "DROP", window: 60.4, njobs: 24, npart: 400, nddl: 10, cpu: 2, ver: "19.27.0.0.0", con: "PDB1", ashok: "Y", awr: "Y", snapb: 38, snape: 39, ashfile: "pinx_run1_drop_ash.html", awrfile: "pinx_run1_drop_awr.html",
+  m: {inval: 10, hp: 40, pinw: 230, pinms: 459529, ashpin: 437, eps: 797},
   ddl: [
-    [5.5, 22.9, "Y", "alter table t drop partition p400 update indexes"],
-    [10.9, 29.9, "Y", "alter table t drop partition p399 update indexes"],
-    [16.4, 19.7, "Y", "alter table t drop partition p398 update indexes"],
-    [21.9, 21.1, "Y", "alter table t drop partition p397 update indexes"],
-    [27.4, 23.9, "Y", "alter table t drop partition p396 update indexes"],
-    [32.8, 33.1, "Y", "alter table t drop partition p395 update indexes"],
-    [38.3, 25.8, "Y", "alter table t drop partition p394 update indexes"],
-    [43.8, 23.0, "Y", "alter table t drop partition p393 update indexes"],
-    [49.3, 26.4, "Y", "alter table t drop partition p392 update indexes"],
-    [54.7, 17.6, "Y", "alter table t drop partition p391 update indexes"],
+    [5.5, 76.1, "Y", "alter table t drop partition p400 update indexes"],
+    [11.0, 66.2, "Y", "alter table t drop partition p399 update indexes"],
+    [16.5, 38.1, "Y", "alter table t drop partition p398 update indexes"],
+    [22.0, 30.4, "Y", "alter table t drop partition p397 update indexes"],
+    [27.5, 33.4, "Y", "alter table t drop partition p396 update indexes"],
+    [33.0, 29.5, "Y", "alter table t drop partition p395 update indexes"],
+    [38.4, 31.8, "Y", "alter table t drop partition p394 update indexes"],
+    [43.9, 34.0, "Y", "alter table t drop partition p393 update indexes"],
+    [49.4, 31.9, "Y", "alter table t drop partition p392 update indexes"],
+    [54.9, 39.8, "Y", "alter table t drop partition p391 update indexes"],
   ],
   ash: [
-    [0.6,0,0,0,0,2],
-    [1.6,0,0,0,0,1],
-    [4.6,0,0,0,0,2],
-    [5.6,23,0,0,0,1],
-    [6.6,23,0,0,0,1],
-    [8.6,0,0,0,0,1],
-    [9.6,0,0,0,0,1],
-    [11.6,23,0,0,0,1],
-    [12.6,23,0,0,0,1],
-    [16.6,23,0,0,0,1],
-    [17.6,23,0,0,0,1],
-    [18.6,0,0,0,0,2],
-    [20.6,0,0,0,0,1],
-    [22.6,23,0,0,0,1],
-    [23.6,23,0,0,0,1],
-    [24.6,0,0,0,0,1],
-    [25.6,0,0,0,0,1],
-    [27.6,23,0,0,0,1],
-    [28.6,23,0,0,0,1],
-    [29.6,0,0,0,0,1],
-    [32.6,0,0,0,0,1],
-    [33.6,23,0,0,0,1],
-    [34.6,23,0,0,0,1],
-    [37.6,0,0,0,0,1],
-    [38.6,23,0,0,0,1],
-    [39.6,23,0,0,0,1],
-    [40.6,0,0,0,0,1],
-    [41.6,0,0,0,0,1],
-    [44.6,23,0,0,0,1],
-    [45.6,23,0,0,0,1],
-    [46.6,0,0,0,0,2],
-    [48.6,0,0,0,0,1],
-    [49.6,23,0,0,0,1],
-    [50.6,23,0,0,0,1],
-    [51.6,0,0,0,0,1],
-    [52.6,0,0,0,0,2],
-    [55.6,23,0,0,0,1],
-    [56.6,23,0,0,0,1],
-    [58.6,0,0,0,0,1],
-    [59.6,0,0,0,0,1],
+    [0.0,0,0,0,0,1],
+    [1.0,0,0,0,0,1],
+    [3.0,0,0,0,0,1],
+    [6.0,23,0,0,0,1],
+    [7.0,23,0,0,0,1],
+    [10.0,0,0,0,0,1],
+    [11.0,16,0,0,0,1],
+    [12.0,23,0,0,0,1],
+    [13.0,0,0,0,1,0],
+    [17.0,23,0,0,0,1],
+    [18.0,23,0,0,0,1],
+    [22.0,7,0,0,0,1],
+    [23.0,23,0,0,0,1],
+    [25.0,0,0,0,0,1],
+    [26.0,0,0,0,0,2],
+    [28.0,23,0,0,0,1],
+    [29.0,23,0,0,0,1],
+    [31.0,0,0,0,0,2],
+    [33.0,23,0,0,0,1],
+    [34.0,23,0,0,0,1],
+    [35.0,0,0,0,0,1],
+    [37.0,0,0,0,0,2],
+    [39.0,23,0,0,0,1],
+    [40.0,23,0,0,0,1],
+    [41.0,0,0,0,0,1],
+    [43.0,0,0,0,0,1],
+    [44.0,23,0,0,0,1],
+    [45.0,23,0,0,0,1],
+    [46.0,0,0,0,0,2],
+    [47.0,0,0,0,0,1],
+    [48.0,0,0,0,0,1],
+    [50.0,23,0,0,0,1],
+    [51.0,23,0,0,0,1],
+    [52.0,0,0,0,0,1],
+    [54.0,0,0,0,0,1],
+    [55.0,23,0,0,0,1],
+    [56.0,23,0,0,0,1],
+    [58.0,0,0,0,0,1],
+    [60.0,0,0,0,0,1],
   ]});
-PINX.runs.push({id: 2, kind: "EXCHANGE", window: 60.1, njobs: 24, npart: 400, nddl: 10, cpu: 2, ver: "19.27.0.0.0", con: "PDB1", ashok: "Y", awr: "Y", snapb: 36, snape: 37, ashfile: "pinx_run2_exchange_ash.html", awrfile: "pinx_run2_exchange_awr.html",
-  m: {inval: 0, hp: 0, pinw: 0, pinms: 0, ashpin: 0, eps: 1177},
+PINX.runs.push({id: 2, kind: "EXCHANGE", window: 60.1, njobs: 24, npart: 390, nddl: 10, cpu: 2, ver: "19.27.0.0.0", con: "PDB1", ashok: "Y", awr: "Y", snapb: 40, snape: 41, ashfile: "pinx_run2_exchange_ash.html", awrfile: "pinx_run2_exchange_awr.html",
+  m: {inval: 0, hp: 0, pinw: 0, pinms: 0, ashpin: 0, eps: 1176},
   ddl: [
-    [5.5, 10.7, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [10.9, 8.5, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [16.4, 10.3, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [21.8, 8.8, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [27.3, 7.4, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [32.7, 7.8, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [38.2, 9.2, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [43.7, 8.2, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [49.1, 9.1, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
-    [54.6, 10.6, "N", "alter table t exchange partition p400 with table t_x including indexes without validation"],
+    [5.5, 35.7, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [10.9, 11.6, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [16.4, 10.4, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [21.9, 13.3, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [27.3, 9.9, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [32.8, 11.6, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [38.2, 9.7, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [43.7, 10.7, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [49.2, 13.1, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
+    [54.6, 14.4, "N", "alter table t exchange partition p390 with table t_x including indexes without validation"],
   ],
   ash: [
-    [2.2,0,0,0,0,2],
-    [8.2,0,0,0,0,1],
-    [11.2,0,0,0,0,1],
-    [12.2,0,0,0,0,1],
-    [13.2,0,0,0,0,1],
-    [14.2,0,0,0,0,2],
-    [26.2,0,0,0,0,1],
-    [27.2,0,0,0,0,1],
-    [28.2,0,0,0,0,1],
-    [29.2,0,0,0,0,1],
-    [32.2,0,0,0,0,1],
-    [38.2,0,0,0,0,1],
-    [39.2,0,0,0,0,1],
-    [40.2,0,0,0,0,1],
-    [41.2,0,0,0,0,1],
-    [45.2,0,0,0,0,1],
-    [46.2,0,0,0,0,1],
-    [53.2,0,0,0,0,1],
-    [54.2,0,0,0,0,2],
-    [55.2,0,0,0,0,1],
-    [56.2,0,0,0,0,1],
-    [57.2,0,0,0,0,1],
+    [3.0,0,0,0,0,1],
+    [5.0,0,0,0,0,1],
+    [7.0,0,0,0,0,1],
+    [8.0,0,0,0,0,1],
+    [9.0,0,0,0,0,1],
+    [10.0,0,0,0,0,2],
+    [12.0,0,0,0,0,1],
+    [14.0,0,0,0,0,2],
+    [15.0,0,0,0,0,1],
+    [18.0,0,0,0,0,1],
+    [22.0,0,0,0,0,1],
+    [26.0,0,0,0,0,1],
+    [29.0,0,0,0,0,1],
+    [30.0,0,0,0,0,2],
+    [31.0,0,0,0,0,2],
+    [36.0,0,0,0,0,1],
+    [37.0,0,0,0,0,1],
+    [38.0,0,0,0,0,1],
+    [42.0,0,0,0,0,1],
+    [44.0,0,0,0,0,1],
+    [45.0,0,0,0,0,1],
+    [47.0,0,0,0,0,1],
+    [48.0,0,0,0,0,1],
+    [49.0,0,0,0,0,1],
+    [50.0,0,0,0,0,1],
+    [51.0,0,0,0,0,1],
+    [52.0,0,0,0,0,1],
+    [53.0,0,0,0,0,1],
+    [55.0,0,0,0,0,1],
+    [56.0,0,0,0,0,1],
   ]});
 PINX.checks.push(["DROP", "Run completed", "DONE", "DONE", "PASS"]);
 PINX.checks.push(["DROP", "DDL statements executed", "10", "10", "PASS"]);
@@ -1423,7 +1678,7 @@ PINX.checks.push(["DROP", "Worker procedure still VALID", "VALID", "VALID", "PAS
 PINX.checks.push(["DROP", "DDLs that invalidated the hot cursor", "10", "10", "PASS"]);
 PINX.checks.push(["DROP", "Waits on cursor: pin S wait on X", "> 0", "230", "PASS"]);
 PINX.checks.push(["DROP", "Worker hard parses", "> 0", "40", "PASS"]);
-PINX.checks.push(["DROP", "ASH samples on pin S wait on X", "> 0", "460", "PASS"]);
+PINX.checks.push(["DROP", "ASH samples on pin S wait on X", "> 0", "437", "PASS"]);
 PINX.checks.push(["EXCHANGE", "Run completed", "DONE", "DONE", "PASS"]);
 PINX.checks.push(["EXCHANGE", "DDL statements executed", "10", "10", "PASS"]);
 PINX.checks.push(["EXCHANGE", "Workers measured", "24", "24", "PASS"]);
@@ -1471,7 +1726,7 @@ PINX.overall = "PASS";
     return s.join("");
   }
   host.innerHTML = D.runs.map(function(r){
-    var t = r.kind === "DROP" ? "Run A · DROP PARTITION" : "Run B · EXCHANGE PARTITION";
+    var t = r.kind === "DROP" ? "Step 3 · DROP PARTITION" : "Step 4 · EXCHANGE PARTITION";
     return '<div style="min-width:0"><div style="font-weight:600;margin-bottom:4px" class="' + (r.kind === "DROP" ? "drop" : "keep") + '">' + t +
            '</div><div class="scroll">' + chart(r) + '</div></div>';
   }).join("");

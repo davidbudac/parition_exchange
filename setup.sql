@@ -58,14 +58,39 @@ declare
     if c = 0 then execute immediate p_sql; end if;
   end;
 begin
-  -- One row: tells workers which run they belong to and when to stop.
+  -- Live state, not history: recreated on every install.
+  for t in (select table_name from user_tables where table_name in ('PINX_CTL', 'PINX_POOL')) loop
+    execute immediate 'drop table '||t.table_name||' purge';
+  end loop;
+
+  -- One row the workers read after every execution:
+  --   RUN     = keep running the hot query
+  --   MEASURE = a test's measurement window is open (run_id says which)
+  --   STOP    = finish and exit
+  -- The workers also exit on their own at DEADLINE, so they never run
+  -- forever if nobody stops them.
   ddl('PINX_CTL', q'[
     create table pinx_ctl (
-      id        number       default 1 primary key check (id = 1),
-      run_id    number,
-      phase     varchar2(10) check (phase in ('WARMUP', 'MEASURE', 'STOP')),
-      deadline  timestamp,
-      parse_ms  number)]');
+      id          number       default 1 primary key check (id = 1),
+      run_id      number,
+      phase       varchar2(10) check (phase in ('RUN', 'MEASURE', 'STOP')),
+      deadline    timestamp,
+      parse_ms    number,
+      think_ms    number,
+      njobs       number,
+      started_at  timestamp)]');
+
+  -- One row per worker job while workers are started: its session and a
+  -- heartbeat (every 2 s) so status.sql and the tests can see it is alive.
+  ddl('PINX_POOL', q'[
+    create table pinx_pool (
+      worker      number primary key,
+      sid         number,
+      started_at  timestamp,
+      ready_at    timestamp,
+      last_beat   timestamp,
+      execs       number,
+      ended_at    timestamp)]');
 
   -- One row per run.
   ddl('PINX_RUN', q'[
@@ -91,7 +116,8 @@ begin
       worker_proc_status   varchar2(10),
       error_text           varchar2(4000))]');
 
-  -- One row per worker per run.
+  -- One row per worker per test run: written by the worker when it joins
+  -- the run's measurement window (ready_at) and when it leaves (end_at).
   ddl('PINX_WORKER', q'[
     create table pinx_worker (
       run_id        number not null,
@@ -187,7 +213,6 @@ begin
             union all select 'PINX_DDL', 'CURSOR_SETTLED', 'varchar2(1000)' from dual
             union all select 'PINX_RUN', 'PARSE_MS',       'number'         from dual
             union all select 'PINX_RUN', 'THINK_MS',       'number'         from dual
-            union all select 'PINX_CTL', 'PARSE_MS',       'number'         from dual
             union all select 'PINX_RUN', 'AWR_ENABLED',    'varchar2(1)'    from dual
             union all select 'PINX_RUN', 'AWR_DBID',       'number'         from dual
             union all select 'PINX_RUN', 'INST_NUM',       'number'         from dual
@@ -201,7 +226,7 @@ end;
 
 merge into pinx_ctl c
 using (select 1 id from dual) s on (c.id = s.id)
-when not matched then insert (id, run_id, phase, deadline) values (1, null, 'STOP', null);
+when not matched then insert (id, phase) values (1, 'STOP');
 commit;
 
 -- ---------------------------------------------------------------------
@@ -288,24 +313,33 @@ create or replace package pinx_lab authid definer as
   c_job_prefix  constant varchar2(10) := 'PINX_W';
   c_lock_name   constant varchar2(30) := 'PINX_CONTROLLER';
 
-  -- (Re)create T (p_npart range partitions, local index, stats) and T_X,
-  -- then regenerate the worker.
+  -- Step 1 (build.sql): stop any workers, then (re)create T (p_npart range
+  -- partitions, 1000 rows each, local index, stats) and T_X, and
+  -- regenerate the worker procedure.
   procedure build_table(p_npart in pls_integer);
 
   -- (Re)generate and compile PINX_HOT_LOOP (needs T to exist).
   procedure create_worker;
 
-  -- One complete test run. p_kind = 'DROP' or 'EXCHANGE'.
+  -- Step 2 (start_workers.sql): start p_njobs scheduler jobs that run the
+  -- hot query until stop_workers is called or p_minutes have passed.
+  -- Restarts them if they are already running. Returns once every worker
+  -- has executed the query.
+  procedure start_workers(p_njobs    in pls_integer,
+                          p_think_ms in pls_integer,
+                          p_parse_ms in pls_integer,
+                          p_minutes  in pls_integer);
+
+  -- Steps 3 and 4 (test_drop.sql, test_exchange.sql): one measured test
+  -- against the workers that are already running. p_kind = 'DROP' or
+  -- 'EXCHANGE'. Leaves the workers running.
   -- p_awr: AUTO (snapshots when the Diagnostics Pack is enabled and
   -- DBMS_WORKLOAD_REPOSITORY is granted), YES (required) or NO.
   procedure run_case(p_kind     in varchar2,
-                     p_njobs    in pls_integer,
-                     p_npart    in pls_integer,
                      p_nddl     in pls_integer,
                      p_secs     in pls_integer,
                      p_warmup   in pls_integer,
                      p_parse_ms in pls_integer default 0,
-                     p_think_ms in pls_integer default 0,
                      p_awr      in varchar2    default 'AUTO');
 
   -- Self-contained HTML page (one row per line) with the ASH timeline of
@@ -334,13 +368,17 @@ create or replace package body pinx_lab as
 
   -- Source of PINX_HOT_LOOP; {{HOT_QUERY}} is filled in by create_worker.
   c_worker_tpl constant varchar2(32767) := q'~create or replace procedure pinx_hot_loop(
-  p_run_id in number, p_worker in pls_integer, p_think_ms in pls_integer default 0)
+  p_worker in pls_integer, p_think_ms in pls_integer default 0)
   authid definer
 as
   -- GENERATED by pinx_lab.create_worker - do not edit; rerun setup.sql.
   --
   -- The worker. Separate from the package because it is the only code
-  -- with a static dependency on T. Runs as a DBMS_SCHEDULER job.
+  -- with a static dependency on T. Runs as a DBMS_SCHEDULER job, started
+  -- by start_workers, and keeps running the hot query until PINX_CTL
+  -- says STOP or its deadline passes. When a test opens a measurement
+  -- window (phase MEASURE) the worker snapshots its own counters, and
+  -- again when the window closes.
   -- The hot query reads only P1 of T (id < 1000 prunes statically).
   -- pinx_parse_marker(a.id) >= 0 is always true but makes every hard
   -- parse cost PARSE_MS of CPU (see pinx_parse_cost). When the cursor is
@@ -353,45 +391,63 @@ as
   l_ctl_run  number;
   l_phase    varchar2(10);
   l_deadline timestamp;
-  l_ready    boolean := false;
-  l_begun    boolean := false;
-  l_execs    pls_integer := 0;
+  l_run      number;                 -- the test run being measured, if any
+  l_execs    pls_integer := 0;       -- executions inside that window
+  l_total    number := 0;            -- executions since the worker started
+  l_beat     timestamp;
   l_batch    pls_integer := case when p_think_ms > 0 then 1 else 20 end;
+
+  procedure leave_window is
+  begin
+    pinx_lab.worker_snap(l_run, p_worker, 'E');
+    update pinx_worker set end_at = systimestamp, execs_window = l_execs
+    where  run_id = l_run and worker = p_worker;
+    commit;
+    l_run := null;
+  end leave_window;
 begin
   dbms_application_info.set_module(pinx_lab.c_module, 'W'||p_worker);
-  update pinx_worker set sid = sys_context('userenv', 'sid')
-  where  run_id = p_run_id and worker = p_worker;
+  update pinx_pool set sid = sys_context('userenv', 'sid'), started_at = systimestamp
+  where  worker = p_worker;
   commit;
 
   loop
     for k in 1 .. l_batch loop
       {{HOT_QUERY}};
-      if l_begun then l_execs := l_execs + 1; end if;
+      l_execs := l_execs + 1;
+      l_total := l_total + 1;
       if p_think_ms > 0 then dbms_session.sleep(p_think_ms / 1000); end if;
     end loop;
 
     select run_id, phase, deadline into l_ctl_run, l_phase, l_deadline
     from   pinx_ctl where id = 1;
-    exit when l_ctl_run is null or l_ctl_run <> p_run_id
-           or l_phase = 'STOP' or systimestamp > l_deadline;
+    exit when l_phase = 'STOP' or systimestamp > l_deadline;
 
-    if not l_ready then
-      update pinx_worker set ready_at = systimestamp
-      where  run_id = p_run_id and worker = p_worker;
-      commit;
-      l_ready := true;
+    -- The window this worker was measuring has closed (or was abandoned).
+    if l_run is not null and (l_phase <> 'MEASURE' or l_ctl_run <> l_run) then
+      leave_window;
     end if;
-    if l_phase = 'MEASURE' and not l_begun then
-      pinx_lab.worker_snap(p_run_id, p_worker, 'B');
-      l_begun := true;
+    -- A test opened a window: baseline snapshot, then count executions.
+    if l_run is null and l_phase = 'MEASURE' then
+      insert into pinx_worker (run_id, worker, sid, ready_at)
+      values (l_ctl_run, p_worker, sys_context('userenv', 'sid'), systimestamp);
+      pinx_lab.worker_snap(l_ctl_run, p_worker, 'B');      -- commits
+      l_run   := l_ctl_run;
+      l_execs := 0;
+    end if;
+    -- Heartbeat every 2 s.
+    if l_beat is null or systimestamp - l_beat > interval '2' second then
+      l_beat := systimestamp;
+      update pinx_pool set ready_at = nvl(ready_at, l_beat), last_beat = l_beat, execs = l_total
+      where  worker = p_worker;
+      commit;
     end if;
   end loop;
 
-  if l_begun then
-    pinx_lab.worker_snap(p_run_id, p_worker, 'E');
+  if l_run is not null then
+    leave_window;
   end if;
-  update pinx_worker set end_at = systimestamp, execs_window = l_execs
-  where  run_id = p_run_id and worker = p_worker;
+  update pinx_pool set ended_at = systimestamp, execs = l_total where worker = p_worker;
   commit;
 end pinx_hot_loop;~';
 
@@ -631,15 +687,19 @@ end pinx_hot_loop;~';
   exception when e_no_table then null;
   end;
 
-  -- Wait until p_sql (a count query with one bind, the run id) reaches
-  -- p_target, or fail after p_timeout_s seconds.
+  -- Wait until p_sql (a count query; with one bind, the run id, unless
+  -- p_run_id is null) reaches p_target, or fail after p_timeout_s seconds.
   procedure wait_for(p_what in varchar2, p_sql in varchar2, p_run_id in number,
                      p_target in pls_integer, p_timeout_s in pls_integer) is
     l_cnt   number;
     l_until timestamp := systimestamp + numtodsinterval(p_timeout_s, 'second');
   begin
     loop
-      execute immediate p_sql into l_cnt using p_run_id;
+      if p_run_id is null then
+        execute immediate p_sql into l_cnt;
+      else
+        execute immediate p_sql into l_cnt using p_run_id;
+      end if;
       exit when l_cnt >= p_target;
       if systimestamp > l_until then
         raise_application_error(-20010,
@@ -673,7 +733,20 @@ end pinx_hot_loop;~';
   -- -------------------------------------------------------------------
   procedure build_table(p_npart in pls_integer) is
     l_sql    clob;
+    l_cnt    number;
   begin
+    if p_npart not between 20 and 5000 then
+      raise_application_error(-20021, 'NPART must be between 20 and 5000.');
+    end if;
+    acquire_lock;
+    -- Workers run a query on T: they must not be running while T is replaced.
+    select count(*) into l_cnt from user_scheduler_jobs where job_name like c_job_prefix||'%';
+    if l_cnt > 0 then
+      say('stopping '||l_cnt||' running workers first');
+      stop_workers(60);
+    end if;
+
+    say('building table T ('||p_npart||' partitions, '||p_npart * 1000||' rows) and T_X');
     drop_if_exists('T_X');
     drop_if_exists('T');
 
@@ -702,6 +775,12 @@ end pinx_hot_loop;~';
     -- The worker depends on T, which was just recreated. Regenerate (and
     -- so compile) it now rather than letting 24 jobs race to do it.
     create_worker;
+    select count(*) into l_cnt from user_tab_partitions where table_name = 'T';
+    say('table T ready: '||l_cnt||' partitions; T_X ready for the exchange');
+    release_lock;
+  exception when others then
+    release_lock;
+    raise;
   end build_table;
 
   -- -------------------------------------------------------------------
@@ -780,7 +859,80 @@ end pinx_hot_loop;~';
         end if;
       end;
     end loop;
+    update pinx_pool set ended_at = nvl(ended_at, systimestamp);
+    commit;
   end stop_workers;
+
+  -- -------------------------------------------------------------------
+  procedure start_workers(p_njobs    in pls_integer,
+                          p_think_ms in pls_integer,
+                          p_parse_ms in pls_integer,
+                          p_minutes  in pls_integer) is
+    l_cnt    number;
+    l_status varchar2(10);
+    l_until  timestamp;
+  begin
+    if p_njobs not between 2 and 200 then
+      raise_application_error(-20022, 'NJOBS must be between 2 and 200.');
+    end if;
+    if p_minutes not between 5 and 1440 then
+      raise_application_error(-20022, 'WORKER_MINUTES must be between 5 and 1440.');
+    end if;
+    acquire_lock;
+    begin
+      select count(*) into l_cnt from user_tab_partitions where table_name = 'T';
+      if l_cnt = 0 then
+        raise_application_error(-20014, 'Table T has not been built yet. Run ./1_build.sh first.');
+      end if;
+
+      select count(*) into l_cnt from user_scheduler_jobs where job_name like c_job_prefix||'%';
+      if l_cnt > 0 then
+        say('stopping the '||l_cnt||' workers that are already running, to start fresh');
+        stop_workers(60);
+      end if;
+
+      select status into l_status from user_objects
+      where  object_name = 'PINX_HOT_LOOP' and object_type = 'PROCEDURE';
+      if l_status <> 'VALID' then
+        create_worker;
+      end if;
+
+      l_until := systimestamp + numtodsinterval(p_minutes, 'minute');
+      update pinx_ctl
+      set    run_id = null, phase = 'RUN', deadline = l_until, parse_ms = p_parse_ms,
+             think_ms = p_think_ms, njobs = p_njobs, started_at = systimestamp
+      where  id = 1;
+      delete pinx_pool;
+      for i in 1 .. p_njobs loop
+        insert into pinx_pool (worker) values (i);
+      end loop;
+      commit;
+
+      for i in 1 .. p_njobs loop
+        dbms_scheduler.create_job(
+          job_name   => job_name(i),
+          job_type   => 'PLSQL_BLOCK',
+          job_action => 'begin pinx_hot_loop('||i||', '||p_think_ms||'); end;',
+          enabled    => true,
+          auto_drop  => true,
+          comments   => 'pinx worker '||i||': runs the hot query until stopped');
+      end loop;
+      say('started '||p_njobs||' worker jobs ('||job_name(1)||' to '||job_name(p_njobs)||
+          '), waiting until each has run the hot query');
+      wait_for('workers ready', 'select count(*) from pinx_pool where ready_at is not null',
+               null, p_njobs, 120);
+      say('all '||p_njobs||' workers are running the hot query ('||p_think_ms||
+          ' ms think time between executions)');
+      say('they stop by themselves at '||to_char(l_until, 'YYYY-MM-DD HH24:MI:SS')||
+          ' ('||p_minutes||' min), or when ./5_cleanup.sh or stop_workers.sql stops them');
+      release_lock;
+    exception when others then
+      rollback;
+      begin stop_workers(30); exception when others then null; end;
+      release_lock;
+      raise;
+    end;
+  end start_workers;
 
   -- -------------------------------------------------------------------
   -- AWR snapshot through dynamic SQL, so the package compiles (and the
@@ -795,14 +947,12 @@ end pinx_hot_loop;~';
 
   -- -------------------------------------------------------------------
   procedure run_case(p_kind     in varchar2,
-                     p_njobs    in pls_integer,
-                     p_npart    in pls_integer,
                      p_nddl     in pls_integer,
                      p_secs     in pls_integer,
                      p_warmup   in pls_integer,
                      p_parse_ms in pls_integer default 0,
-                     p_think_ms in pls_integer default 0,
                      p_awr      in varchar2    default 'AUTO') is
+    type t_names is table of varchar2(128);
     l_kind     varchar2(10) := upper(p_kind);
     l_run      number;
     l_interval number;
@@ -821,12 +971,16 @@ end pinx_hot_loop;~';
     l_snap_b   number;
     l_snap_e   number;
     l_inst     number;
+    l_njobs    number;
+    l_think    number;
+    l_phase    varchar2(10);
+    l_running  number;
+    l_alive    number;
+    l_npart    number;
+    l_parts    t_names;
   begin
     if l_kind not in ('DROP', 'EXCHANGE') then
       raise_application_error(-20020, 'p_kind must be DROP or EXCHANGE');
-    end if;
-    if p_nddl > p_npart - 10 then
-      raise_application_error(-20021, 'NDDL must be <= NPART - 10');
     end if;
     if p_parse_ms not between 0 and 10000 then
       raise_application_error(-20022, 'PARSE_MS must be between 0 and 10000.');
@@ -835,30 +989,52 @@ end pinx_hot_loop;~';
       raise_application_error(-20023, 'AWR must be AUTO, YES or NO');
     end if;
 
-    -- Outside the main block on purpose: if another run holds the lock we
-    -- must fail WITHOUT the cleanup below, which would stop its workers.
+    -- Outside the main block on purpose: if another test holds the lock
+    -- we must fail WITHOUT the cleanup below, which would touch its run.
     acquire_lock;
 
     begin
 
       dbms_application_info.set_module(c_ctl_module, l_kind);
-      say('---- '||l_kind||' run: '||p_njobs||' workers, '||p_npart||' partitions, '||
-          p_parse_ms||' ms per hard parse, '||p_think_ms||' ms think time, '||p_nddl||' DDLs over '||
-          p_secs||' s (+'||p_warmup||' s warm-up)');
 
-      stop_workers(10);                     -- leftovers from an aborted run
       -- A run still RUNNING here was killed (client gone, session killed).
       update pinx_run
       set    status = 'FAILED', ended_at = nvl(ended_at, systimestamp),
              error_text = nvl(error_text, 'aborted: controller session ended before the run finished')
       where  status = 'RUNNING';
+      update pinx_ctl set phase = 'RUN' where id = 1 and phase = 'MEASURE';
       commit;
-      say('building table T ('||p_npart||' partitions, '||p_npart * 1000||' rows)');
-      build_table(p_npart);
+
+      -- The workers from step 2 must be running, every one of them.
+      select njobs, think_ms, phase into l_njobs, l_think, l_phase from pinx_ctl where id = 1;
+      select count(*) into l_running from user_scheduler_running_jobs
+      where  job_name like c_job_prefix||'%';
+      select count(*) into l_alive from pinx_pool
+      where  ended_at is null and last_beat > systimestamp - interval '15' second;
+      if l_phase <> 'RUN' or l_njobs is null or l_running < l_njobs or l_alive < l_njobs then
+        raise_application_error(-20013,
+          'The workers are not running ('||l_running||' worker jobs running, '||nvl(l_alive, 0)||
+          ' with a recent heartbeat, '||nvl(l_njobs, 0)||' expected). Start them with ./2_start_workers.sh.');
+      end if;
+
+      -- The DDL works from the top of the table down; P1, which the hot
+      -- query reads, is never touched.
+      select partition_name bulk collect into l_parts
+      from   user_tab_partitions where table_name = 'T'
+      order  by partition_position desc;
+      l_npart := l_parts.count;
+      if l_npart < p_nddl + 10 then
+        raise_application_error(-20021,
+          'Table T has only '||l_npart||' partitions left, '||(p_nddl + 10)||
+          ' are needed. Rebuild it with ./1_build.sh.');
+      end if;
+
+      say('---- '||l_kind||' test: '||l_njobs||' workers already running, '||l_npart||
+          ' partitions, '||p_parse_ms||' ms per hard parse, '||p_nddl||' DDLs over '||
+          p_secs||' s (+'||p_warmup||' s settle)');
 
       l_ash := case when instr(nvl(param('control_management_pack_access'), 'NONE'), 'DIAGNOSTIC') > 0
                     then 'Y' else 'N' end;
-
       l_cpu   := to_number(param('cpu_count'));
       l_cinv  := param('cursor_invalidation');
       select version_full, instance_number into l_ver, l_inst from v$instance;
@@ -873,36 +1049,20 @@ end pinx_hot_loop;~';
       insert into pinx_run (kind, status, njobs, npart, nddl, secs, warmup, parse_ms, think_ms, started_at,
                             db_version, con_name, cpu_count, sys_cursor_inval, ash_enabled,
                             awr_enabled, awr_dbid, inst_num)
-      values (l_kind, 'RUNNING', p_njobs, p_npart, p_nddl, p_secs, p_warmup, p_parse_ms, p_think_ms, systimestamp,
+      values (l_kind, 'RUNNING', l_njobs, l_npart, p_nddl, p_secs, p_warmup, p_parse_ms, l_think, systimestamp,
               l_ver, sys_context('userenv', 'con_name'), l_cpu, l_cinv, l_ash,
               l_awr, to_number(sys_context('userenv', 'con_dbid')), l_inst)
       returning run_id into l_run;
 
-      -- Workers stop by themselves at this deadline even if this session dies.
+      -- This test's hard-parse cost, and enough worker lifetime to finish.
       update pinx_ctl
-      set    run_id = l_run, phase = 'WARMUP', parse_ms = p_parse_ms,
-             deadline = systimestamp + numtodsinterval(p_warmup + p_secs + 120, 'second')
+      set    parse_ms = p_parse_ms,
+             deadline = greatest(deadline, systimestamp + numtodsinterval(p_warmup + p_secs + 300, 'second'))
       where  id = 1;
-      for i in 1 .. p_njobs loop
-        insert into pinx_worker (run_id, worker) values (l_run, i);
-      end loop;
       commit;
 
-      for i in 1 .. p_njobs loop
-        dbms_scheduler.create_job(
-          job_name   => job_name(i),
-          job_type   => 'PLSQL_BLOCK',
-          job_action => 'begin pinx_hot_loop('||l_run||', '||i||', '||p_think_ms||'); end;',
-          enabled    => true,
-          auto_drop  => true,
-          comments   => 'pinx worker for run '||l_run);
-      end loop;
-      say('started '||p_njobs||' worker jobs, waiting for all of them to run the hot query');
-
-      wait_for('workers ready',
-               'select count(*) from pinx_worker where run_id = :1 and ready_at is not null',
-               l_run, p_njobs, 120);
-      say('all workers running; warming up for '||p_warmup||' s');
+      -- Let the workers settle (start-up parses, or the tail of a previous test).
+      say('workers settling for '||p_warmup||' s');
       dbms_session.sleep(p_warmup);
 
       -- AWR snapshot just before the window (and one just after it), so
@@ -919,16 +1079,16 @@ end pinx_hot_loop;~';
       end if;
 
       -- Open the measurement window: workers snapshot their counters first.
-      update pinx_ctl set phase = 'MEASURE' where id = 1;
+      update pinx_ctl set run_id = l_run, phase = 'MEASURE' where id = 1;
       commit;
       wait_for('worker baseline snapshots',
                q'[select count(distinct worker) from pinx_worker_snap where run_id = :1 and phase = 'B']',
-               l_run, p_njobs, 60);
+               l_run, l_njobs, 60);
       sys_snap(l_run, 'B');
 
       select max(sql_id) into l_sql_id from pinx_cursor_snap where run_id = l_run and phase = 'B';
       if l_sql_id is null then
-        raise_application_error(-20012, 'Hot cursor not found in V$SQL after warm-up.');
+        raise_application_error(-20012, 'Hot cursor not found in V$SQL.');
       end if;
       update pinx_run set window_start = systimestamp, sql_id = l_sql_id where run_id = l_run;
       commit;
@@ -946,10 +1106,10 @@ end pinx_hot_loop;~';
         l_sig := cursor_sig(l_sql_id);
         update pinx_ddl set cursor_settled = l_sig where run_id = l_run and seq = i - 1;
         l_sql := case l_kind
-                   when 'DROP' then
-                     'alter table t drop partition p'||(p_npart - i + 1)||' update indexes'
-                   else
-                     'alter table t exchange partition p'||p_npart||
+                   when 'DROP' then             -- the highest partition still there
+                     'alter table t drop partition '||lower(l_parts(i))||' update indexes'
+                   else                         -- always the highest partition
+                     'alter table t exchange partition '||lower(l_parts(1))||
                      ' with table t_x including indexes without validation'
                  end;
         l_t0 := systimestamp;
@@ -975,16 +1135,13 @@ end pinx_hot_loop;~';
       update pinx_run
       set    awr_enabled = l_awr, awr_snap_begin = l_snap_b, awr_snap_end = l_snap_e
       where  run_id = l_run;
-      commit;
-      say('stopping workers');
 
-      -- Workers take their end snapshot when they see STOP.
-      update pinx_ctl set phase = 'STOP' where id = 1;
+      -- Close the window; the workers take their end snapshot and carry on.
+      update pinx_ctl set phase = 'RUN' where id = 1;
       commit;
-      wait_for('workers finished',
+      wait_for('worker end snapshots',
                'select count(*) from pinx_worker where run_id = :1 and end_at is not null',
-               l_run, p_njobs, 120);
-      stop_workers(30);
+               l_run, l_njobs, 60);
 
       if l_ash = 'Y' then
         begin
@@ -1019,7 +1176,7 @@ end pinx_hot_loop;~';
              worker_proc_status = l_status
       where  run_id = l_run;
       commit;
-      say(l_kind||' run '||l_run||' complete');
+      say(l_kind||' test run '||l_run||' complete; the workers keep running');
 
     exception
       when others then
@@ -1027,13 +1184,13 @@ end pinx_hot_loop;~';
           l_err varchar2(4000) := substr(sqlerrm||chr(10)||dbms_utility.format_error_backtrace, 1, 4000);
         begin
           rollback;
-          begin stop_workers(30); exception when others then null; end;
+          update pinx_ctl set phase = 'RUN' where id = 1 and phase = 'MEASURE';
           if l_run is not null then
             update pinx_run set status = 'FAILED', ended_at = systimestamp, error_text = l_err
             where  run_id = l_run;
-            commit;
           end if;
-          say('RUN FAILED: '||l_err);
+          commit;
+          say('TEST FAILED: '||l_err);
           dbms_application_info.set_module(null, null);
           release_lock;
         end;
@@ -1203,7 +1360,6 @@ end pinx_hot_loop;~';
 
 end pinx_lab;
 /
-show errors package body pinx_lab
 set define on
 
 -- ---------------------------------------------------------------------

@@ -1,5 +1,6 @@
 -- =====================================================================
--- report.sql - compare the latest completed DROP and EXCHANGE runs.
+-- report.sql - compare the latest completed DROP and EXCHANGE test runs
+-- (either one alone is fine; it is reported without a comparison).
 -- Ends with OVERALL: PASS or FAIL; on FAIL the script exits with an
 -- error so run.sh (and CI) see a non-zero exit code.
 -- Read-only: can be run as often as you like.
@@ -74,15 +75,17 @@ declare
   l_fail   number;
   l_total  number;
 begin
-  if &RUN_DROP = -1 or &RUN_EXCH = -1 then
-    dbms_output.put_line(chr(10)||'OVERALL: FAIL - need one completed DROP and one completed EXCHANGE run '||
+  if &RUN_DROP = -1 and &RUN_EXCH = -1 then
+    dbms_output.put_line(chr(10)||'OVERALL: FAIL - no completed test run yet '||
                          '(see pinx_run.status / error_text).');
-    raise_application_error(-20100, 'report incomplete');
+    raise_application_error(-20100, 'no completed test run');
   end if;
   select count(*), count(case result when 'FAIL' then 1 end) into l_total, l_fail
   from   pinx_v_check where run_id in (&RUN_DROP, &RUN_EXCH);
   if l_fail = 0 then
-    dbms_output.put_line(chr(10)||'OVERALL: PASS ('||l_total||' checks)');
+    dbms_output.put_line(chr(10)||'OVERALL: PASS ('||l_total||' checks)'||
+      case when &RUN_EXCH = -1 then ' - DROP test only so far; run ./4_test_exchange.sh to compare'
+           when &RUN_DROP = -1 then ' - EXCHANGE test only so far; run ./3_test_drop.sh to compare' end);
   else
     dbms_output.put_line(chr(10)||'OVERALL: FAIL ('||l_fail||' of '||l_total||' checks failed)');
     raise_application_error(-20101, l_fail||' check(s) failed');
