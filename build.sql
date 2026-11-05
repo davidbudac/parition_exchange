@@ -12,4 +12,8 @@ set lines 200 serveroutput on size unlimited format wrapped verify off feedback 
 prompt
 prompt ==== Building the data
 exec pinx_lab.build_table(&NPART)
+
+prompt
+prompt ==== Where you are: workers, data, tests so far
+@@state.sql
 set feedback on

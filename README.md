@@ -161,6 +161,7 @@ Extra scripts, run as `PINX` with `./run.sh <name>`:
 | Name | What it does |
 |------|--------------|
 | `status` | Each worker: its job, session, what it's doing right now, its heartbeat and executions. Then the hot query's executions per second, measured over 5 s. |
+| `state` | Where you are: the workers (how many run, what they are doing, the hot cursor's counters, executions per second), the row counts in `T` and `T_X` (counted with `COUNT(*)`: the partitions the tests use, `P1`, `T_X`), and the tests run so far. Steps 1, 3 and 4 print it too (3 and 4 before and after the DDL). |
 | `stop_workers` | Stops the workers, keeps everything else. Step 2 starts them again. |
 | `report` | Prints the results and checks of the latest tests again. |
 | `evidence` | Writes the `reports/` files again. |
@@ -219,11 +220,19 @@ and    pinx_parse_marker(a.id) >= 0;
    - The DROP test drops the highest partition, ten times: `p400`,
      `p399`, ... `p391` on a fresh table.
    - The EXCHANGE test exchanges the highest partition with `T_X` ten
-     times (back and forth).
+     times (back and forth). After the DROP test that is `p390`, which
+     still holds its 1,000 rows. Each exchange swaps the two segments:
+     after an odd number the rows are in `T_X` and `p390` is empty;
+     after ten they are back in `p390`.
 
    Before each DDL, and again once things have settled (just before the
    next DDL), the controller records a signature of the hot cursor. If
    the signature changed, that DDL invalidated the cursor.
+
+   The output shows, for each DDL: what the workers are doing 0.5 s
+   after it, the rows in the dropped partition (DROP) or in the
+   exchanged partition and `T_X` (EXCHANGE), and whether the hot cursor
+   was invalidated by the time of the next DDL.
 6. **Close the window** (`PINX_CTL` = `RUN`). The workers take their end
    snapshots and carry on running. Then the second AWR snapshot.
 7. **Copy the window's ASH rows** for the worker and controller sessions
@@ -330,7 +339,7 @@ asked for in steps 2 to 4.
 | File | Purpose |
 |------|---------|
 | `1_build.sh` ... `5_cleanup.sh` | The five steps. |
-| `run.sh` | Runs one SQL script as `PINX`: `status`, `stop_workers`, `report`, `evidence`, `preflight`. |
+| `run.sh` | Runs one SQL script as `PINX`: `status`, `state`, `stop_workers`, `report`, `evidence`, `preflight`. |
 | `connection.conf` | How to connect, as the DBA and as `PINX`. No passwords. |
 | `config.sql` | What to test. |
 | `lib/common.sh`, `lib/sqlcl.sql` | Shared by the shell scripts: connecting, logging, exit codes. |
@@ -339,7 +348,8 @@ asked for in steps 2 to 4.
 | `preflight.sql` | Checks version, container, privileges, `job_queue_processes`, quota, licence settings and parameters, and lists **every** problem at once. |
 | `setup.sql` | Installs the result tables, the parse-cost function and type, the `PINX_LAB` package, the `PINX_HOT_LOOP` worker and the report views. It's idempotent and keeps earlier results. |
 | `start_workers.sql`, `status.sql`, `stop_workers.sql` | Step 2 and the worker helpers. |
-| `test_drop.sql`, `test_exchange.sql` | Steps 3 and 4: the test, then `evidence.sql` and `report.sql`. |
+| `state.sql` | Where you are: workers, row counts in `T` and `T_X`, tests so far. Read-only. |
+| `test_drop.sql`, `test_exchange.sql` | Steps 3 and 4: `state.sql`, the test, `state.sql`, then `evidence.sql` and `report.sql`. |
 | `evidence.sql`, `lib/oracle_reports.sql` | Write the HTML timeline and Oracle's ASH/AWR reports to `reports/`. |
 | `report.sql` | Read-only text comparison plus PASS/FAIL. |
 | `cleanup.sql` | Stops the workers and drops every harness object, keeping the user (`5_cleanup.sh --keep-user`). |

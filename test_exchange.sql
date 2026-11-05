@@ -4,6 +4,8 @@
 -- Expected on 19c: the hot cursor does not read the exchanged
 -- partition, so fine-grained invalidation leaves it valid: no reparse,
 -- no waits.
+-- Prints the workers, the row counts in T and T_X and the tests so far
+-- before and after the DDL, and after each DDL what it changed.
 -- Afterwards: Oracle ASH/AWR reports and the timeline in reports/, and
 -- the comparison with the latest DROP test, if there is one.
 -- =====================================================================
@@ -12,7 +14,15 @@ set lines 200 serveroutput on size unlimited format wrapped verify off feedback 
 whenever sqlerror exit failure rollback
 
 prompt
+prompt ==== Before the EXCHANGE test: workers, data, tests so far
+@@state.sql
+
+prompt
 prompt ==== EXCHANGE PARTITION test (about &WARMUP + &SECS s)
 exec pinx_lab.run_case('EXCHANGE', &NDDL, &SECS, &WARMUP, &PARSE_MS, '&AWR')
+
+prompt
+prompt ==== After the EXCHANGE test: workers, data, tests so far
+@@state.sql
 @@evidence.sql
 @@report.sql

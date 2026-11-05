@@ -3,6 +3,7 @@
 # run.sh - run one SQL script as the test user, outside the five steps.
 #
 #   ./run.sh status         what the workers are doing right now
+#   ./run.sh state          where you are: workers, rows in T and T_X, tests so far
 #   ./run.sh stop_workers   stop the workers, keep everything else
 #   ./run.sh report         print the latest results and checks again
 #   ./run.sh evidence       write the reports/ files again
@@ -15,7 +16,7 @@ source "$(dirname "$0")/lib/common.sh"
 script="${1:-}"
 script="${script%.sql}"
 if [[ -z "$script" ]]; then
-  sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
 fi
 if [[ ! -f "$script.sql" ]]; then

@@ -837,6 +837,60 @@ end pinx_hot_loop;~';
     return nvl(l_sig, 'none');
   end cursor_sig;
 
+  -- Hot cursor counters, summed over its child cursors (progress output).
+  procedure cursor_counts(p_sql_id in varchar2, p_kids out number,
+                          p_loads out number, p_inval out number) is
+  begin
+    select count(*), nvl(sum(loads), 0), nvl(sum(invalidations), 0)
+    into   p_kids, p_loads, p_inval
+    from   v$sql where sql_id = p_sql_id;
+  end cursor_counts;
+
+  -- Progress line: did DDL p_seq invalidate the hot cursor? Same test as
+  -- the report: the cursor signature (every child cursor's address,
+  -- loads, invalidations) before the DDL differs from the settled one.
+  procedure say_cursor(p_seq in pls_integer, p_sig_before in varchar2,
+                       p_sig_settled in varchar2, p_sql_id in varchar2) is
+    l_kids  number;
+    l_loads number;
+    l_inval number;
+  begin
+    cursor_counts(p_sql_id, l_kids, l_loads, l_inval);
+    say('  hot cursor after DDL '||p_seq||': '||
+        case when p_sig_before <> p_sig_settled then 'INVALIDATED, parsed again'
+             else 'still valid, not parsed again' end||
+        ' (now '||l_kids||' child cursor(s), '||l_loads||' loads, '||l_inval||' invalidations)');
+  end say_cursor;
+
+  -- What the worker sessions are doing right now, e.g.
+  -- "22 cursor: pin S wait on X, 2 on CPU" (progress output).
+  function workers_doing return varchar2 is
+    l_txt varchar2(4000);
+  begin
+    select listagg(cnt||' '||doing, ', ') within group (order by cnt desc, doing)
+    into   l_txt
+    from  (select doing, count(*) cnt
+           from  (select case when state = 'WAITING' and event = 'PL/SQL lock timer' then 'think time'
+                              when state = 'WAITING' then event
+                              else 'on CPU' end doing
+                  from   v$session where module = c_module)
+           group  by doing);
+    return nvl(l_txt, 'no worker sessions');
+  end workers_doing;
+
+  -- Rows in one partition of T, or in T_X when p_partition is null.
+  function rows_in(p_partition in varchar2 default null) return number is
+    l_cnt number;
+  begin
+    if p_partition is null then
+      execute immediate 'select count(*) from t_x' into l_cnt;
+    else
+      execute immediate 'select count(*) from t partition ('||
+                        dbms_assert.simple_sql_name(p_partition)||')' into l_cnt;
+    end if;
+    return l_cnt;
+  end rows_in;
+
   -- -------------------------------------------------------------------
   procedure stop_workers(p_timeout_s in pls_integer default 60) is
     l_cnt   number;
@@ -973,6 +1027,13 @@ end pinx_hot_loop;~';
     l_inst     number;
     l_njobs    number;
     l_think    number;
+    l_rows     number;
+    l_kids0    number;
+    l_loads0   number;
+    l_inval0   number;
+    l_sig_ddl  varchar2(1000);
+    -- Seconds after each DDL at which the workers are looked at.
+    c_peek     constant number := 0.5;
     l_phase    varchar2(10);
     l_running  number;
     l_alive    number;
@@ -1093,6 +1154,9 @@ end pinx_hot_loop;~';
       update pinx_run set window_start = systimestamp, sql_id = l_sql_id where run_id = l_run;
       commit;
       say('window open (hot cursor sql_id '||l_sql_id||')');
+      cursor_counts(l_sql_id, l_kids0, l_loads0, l_inval0);
+      say('  hot cursor: '||l_kids0||' child cursor(s), '||l_loads0||' loads, '||l_inval0||' invalidations');
+      say('  workers: '||workers_doing);
 
       -- The DDL. IMMEDIATE is the 19c default; set it explicitly so a
       -- system-level DEFERRED setting cannot change the result.
@@ -1101,10 +1165,17 @@ end pinx_hot_loop;~';
       l_interval := round(p_secs / (p_nddl + 1), 2);
 
       for i in 1 .. p_nddl loop
-        dbms_session.sleep(l_interval);
+        dbms_session.sleep(case when i = 1 then l_interval else greatest(l_interval - c_peek, 0) end);
         -- Settled state after the previous DDL = state before this one.
         l_sig := cursor_sig(l_sql_id);
         update pinx_ddl set cursor_settled = l_sig where run_id = l_run and seq = i - 1;
+        if i > 1 then
+          say_cursor(i - 1, l_sig_ddl, l_sig, l_sql_id);
+        end if;
+        l_sig_ddl := l_sig;
+        if l_kind = 'DROP' then
+          l_rows := rows_in(l_parts(i));
+        end if;
         l_sql := case l_kind
                    when 'DROP' then             -- the highest partition still there
                      'alter table t drop partition '||lower(l_parts(i))||' update indexes'
@@ -1119,15 +1190,23 @@ end pinx_hot_loop;~';
         values (l_run, i, l_sql, l_t0, l_ms, l_sig);
         commit;
         say('DDL '||i||'/'||p_nddl||' ('||l_ms||' ms): '||l_sql);
+        dbms_session.sleep(c_peek);
+        say('  '||to_char(c_peek, 'fm0.0')||' s later, workers: '||workers_doing);
+        if l_kind = 'DROP' then
+          say('  '||l_parts(i)||' had '||l_rows||' rows and is gone; T has '||(l_npart - i)||' partitions');
+        else
+          say('  '||l_parts(1)||' now has '||rows_in(l_parts(1))||' rows, T_X has '||rows_in||' rows');
+        end if;
       end loop;
-      dbms_session.sleep(l_interval);       -- quiet tail: let the last storm finish
+      dbms_session.sleep(greatest(l_interval - c_peek, 0));   -- quiet tail: let the last storm finish
       l_sig := cursor_sig(l_sql_id);
       update pinx_ddl set cursor_settled = l_sig where run_id = l_run and seq = p_nddl;
+      say_cursor(p_nddl, l_sig_ddl, l_sig, l_sql_id);
 
       sys_snap(l_run, 'E');
       update pinx_run set window_end = systimestamp where run_id = l_run;
       commit;
-      say('window closed');
+      say('window closed; workers: '||workers_doing);
       if l_awr = 'Y' then
         l_snap_e := awr_snapshot;
         say('AWR snapshot '||l_snap_e||' (after)');
