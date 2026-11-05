@@ -149,7 +149,7 @@ footer{margin-top:24px;padding-top:18px;border-top:1px solid var(--line);font-si
 
   <h2>Script overview</h2>
   <figure class="dgm">
-    <div class="scroll"><svg class="dg" viewBox="0 0 1060 404" role="img" aria-label="Five scripts run in order: 1_build.sh creates the user, objects and table; 2_start_workers.sh starts 24 worker jobs that keep running; 3_test_drop.sh and 4_test_exchange.sh each run one measured test against those workers and write reports; 5_cleanup.sh stops the workers and drops the user."><text x="15" y="22" class="b">you run, in this order</text>
+    <div class="scroll"><svg class="dg" viewBox="0 0 1060 404" role="img" aria-label="Five scripts run in order: 1_build.sh creates the user, objects and table; 2_start_workers.sh starts 24 worker jobs that query and insert and keep running; 3_test_drop.sh and 4_test_exchange.sh each run one measured test against those workers and write reports; 5_cleanup.sh stops the workers and drops the user."><text x="15" y="22" class="b">you run, in this order</text>
 <line x1="175" y1="18" x2="1040" y2="18" class="ln"/><polygon points="1039,14 1039,22 1046,18" class="ah"/>
 <text x="1045" y="36" text-anchor="end" class="sm mut">time</text>
 <rect x="15" y="46" width="190" height="50" rx="6" class="box"/>
@@ -178,7 +178,7 @@ footer{margin-top:24px;padding-top:18px;border-top:1px solid var(--line);font-si
 <line x1="110.0" y1="246" x2="110.0" y2="266" class="ln"/><polygon points="106.0,265 114.0,265 110.0,272" class="ah"/><text x="117.0" y="263.0" class="mono sm mut">exec</text>
 <rect x="15" y="272" width="190" height="44" rx="6" class="box"/>
 <text x="110.0" y="290.0" text-anchor="middle" class="mono">pinx_lab.build_table</text>
-<text x="110.0" y="306.0" text-anchor="middle" class="sm mut">table T, 400 partitions</text>
+<text x="110.0" y="306.0" text-anchor="middle" class="sm mut">table T, 400 partitions + PCUR</text>
 <line x1="320.0" y1="96" x2="320.0" y2="126" class="ln"/><polygon points="316.0,125 324.0,125 320.0,132" class="ah"/><text x="327.0" y="118.0" class="mono sm mut">@</text>
 <rect x="225" y="132" width="190" height="44" rx="6" class="sunk"/>
 <text x="320.0" y="158.0" text-anchor="middle" class="mono">start_workers.sql</text>
@@ -225,7 +225,7 @@ footer{margin-top:24px;padding-top:18px;border-top:1px solid var(--line);font-si
 <text x="950.0" y="306.0" text-anchor="middle" class="sm mut">everything it owned</text>
 <rect x="225" y="352" width="725.0" height="40" rx="6" class="box-keep"/>
 <text x="587.5" y="370" text-anchor="middle" class="b">24 worker jobs PINX_W001 … PINX_W024</text>
-<text x="587.5" y="386" text-anchor="middle" class="sm mut">execute the hot query from step 2 to step 5</text>
+<text x="587.5" y="386" text-anchor="middle" class="sm mut">query P1, insert into PCUR, commit · from step 2 to step 5</text>
 <line x1="245" y1="316" x2="245" y2="346" class="ln"/><polygon points="241,345 249,345 245,352" class="ah"/>
 <text x="253" y="340" class="sm mut">starts</text>
 <line x1="460.0" y1="316" x2="460.0" y2="352" class="ln dash"/>
@@ -234,7 +234,7 @@ footer{margin-top:24px;padding-top:18px;border-top:1px solid var(--line);font-si
 <text x="676.0" y="340" class="sm mut">measured</text>
 <line x1="950.0" y1="316" x2="950.0" y2="352" class="ln-drop" style="stroke-width:2"/>
 <text x="957.0" y="340" class="sm t-drop">stops</text></svg></div>
-    <figcaption><b>Execution order: left to right.</b> Below each script: the SQL scripts and procedures it runs. Step 2 starts 24 worker jobs; they run during steps 3 and 4; step 5 stops them.</figcaption>
+    <figcaption><b>Execution order: left to right.</b> Below each script: the SQL scripts and procedures it runs. Step 2 starts 24 worker jobs that query P1 and insert into PCUR; they run during steps 3 and 4; step 5 stops them.</figcaption>
   </figure>
 
   <h2>Steps</h2>
@@ -243,14 +243,14 @@ footer{margin-top:24px;padding-top:18px;border-top:1px solid var(--line);font-si
     <section class="stop" id="step-1">
       <div class="mark"><span class="num">1</span></div>
       <div class="body">
-        <div class="head"><h3><span class="f">1_build.sh</span></h3><span class="when">08:31:54 to 08:32:20 · 26 s</span>
+        <div class="head"><h3><span class="f">1_build.sh</span></h3><span class="when">12:50:32 to 12:50:50 · 18 s</span>
           <div class="chips"><span class="chip dba">admin/create_user.sql</span><span class="chip sql">build.sql</span><span class="chip sql">preflight.sql</span><span class="chip sql">setup.sql</span></div></div>
-        <p class="say">Creates user <code>PINX</code>, installs the harness objects, builds table <code>T</code>.</p>
+        <p class="say">Creates user <code>PINX</code>, installs the harness objects, builds table <code>T</code> (400 partitions plus the empty current partition <code>PCUR</code>), the sequence <code>T_SEQ</code> and the exchange table <code>T_X</code>.</p>
         <div class="pair">
           <figure class="term you"><figcaption><span>you type</span><span>on the database host</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./1_build.sh</span>
 Password for the test user PINX (new, or the existing one): <span class="ph">&lt;password&gt;</span></pre></figure>
           <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>======================================================================
-  1/5  Build: user, objects, data    2026-11-05 08:31:54
+  1/5  Build: user, objects, data    2026-11-05 12:50:32
 ======================================================================
 
 ---- as DBA: user PINX and its grants
@@ -270,8 +270,30 @@ Grants in place.
 Harness installed.
 
 ==== Building the data
-08:32:02  building table T (400 partitions, 400000 rows) and T_X
-08:32:20  table T ready: 400 partitions; T_X ready for the exchange
+12:50:39  building table T (400 partitions, 400000 rows, plus the empty current partition PCUR) and T_X
+12:50:50  table T ready: 401 partitions (P1 to P400 and PCUR); T_X ready for the exchange
+
+==== Where you are: workers, data, tests so far
+
+Workers
+  none running (start them with ./2_start_workers.sh)
+  hot query: not in the shared pool
+  insert: not in the shared pool
+
+Tables T and T_X
+
+TABLE / PARTITION              ROWS NOTE                                                                                      
+---------------------- ------------ ------------------------------------------------------------------------------------------
+T                           400,000 400 partitions plus PCUR, 0 of them empty                                                 
+  PCUR                            0 current partition: the workers insert into it; no test changes it                         
+  P400                        1,000 highest below PCUR: the DROP test drops it, the EXCHANGE test exchanges it with T_X       
+<span class="el">  …</span>
+  P2 ... P390               389,000 389 partitions, 0 of them empty                                                           
+  P1                          1,000 read by the hot query; no test changes it                                                 
+T_X                               0 exchange table, not partitioned                                                           
+
+Tests run so far
+  none yet
 
 <span class="ok">Step 1 done. Next: ./2_start_workers.sh</span></pre></figure>
         </div>
@@ -281,158 +303,226 @@ Harness installed.
     <section class="stop keep" id="step-2">
       <div class="mark"><span class="num">2</span></div>
       <div class="body">
-        <div class="head"><h3><span class="f">2_start_workers.sh</span></h3><span class="when">08:32:37 · workers running from 08:32:41</span>
+        <div class="head"><h3><span class="f">2_start_workers.sh</span></h3><span class="when">12:50:52 · workers running from 12:50:56</span>
           <div class="chips"><span class="chip sql">start_workers.sql</span><span class="chip job">PINX_W001 … PINX_W024</span><span class="chip sql">status.sql</span></div></div>
-        <p class="say">Starts 24 scheduler jobs that execute the hot query in a loop. The jobs continue after the script ends. No DDL is issued in this step.</p>
+        <p class="say">Starts 24 scheduler jobs. Each one runs the hot query on <code>P1</code>, inserts a row into <code>PCUR</code> and commits, in a loop. The jobs continue after the script ends. No DDL is issued in this step.</p>
         <div class="pair">
           <figure class="term you"><figcaption><span>you type</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./2_start_workers.sh</span></pre></figure>
           <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>======================================================================
-  2/5  Start the workers    2026-11-05 08:32:37
+  2/5  Start the workers    2026-11-05 12:50:52
 ======================================================================
 
 ==== Starting the workers
-08:32:39  started 24 worker jobs (PINX_W001 to PINX_W024), waiting until each has run the hot query
-08:32:41  all 24 workers are running the hot query (20 ms think time between executions)
-08:32:41  they stop by themselves at 2026-11-05 09:32:39 (60 min), or when ./5_cleanup.sh or stop_workers.sql stops them
+12:50:54  started 24 worker jobs (PINX_W001 to PINX_W024), waiting until each has run the hot query
+12:50:56  all 24 workers are running the hot query, inserting 1 row(s) into PCUR and committing after each execution (20 ms think time)
+12:50:56  they stop by themselves at 2026-11-05 13:50:54 (60 min), or when ./5_cleanup.sh or stop_workers.sql stops them
 
 ==== Workers
-<span class="el">…</span>
-
-<span class="ok">Step 2 done. The workers keep running. Next: ./3_test_drop.sh</span></pre></figure>
-        </div>
-        <p class="say">Worker status, at any later time:</p>
-        <div class="pair">
-          <figure class="term you"><figcaption><span>you type</span><span>optional</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./run.sh status</span></pre></figure>
-          <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>==== Workers
 
    W JOB        STATE       SID DOING NOW                          HEARTBEAT  EXECUTIONS
 ---- ---------- -------- ------ ---------------------------------- ---------- ----------
-   1 PINX_W001  running     310 think time (PL/SQL lock timer)     2 s ago          1077
-   2 PINX_W002  running      15 think time (PL/SQL lock timer)     2 s ago          1072
-   3 PINX_W003  running     303 think time (PL/SQL lock timer)     2 s ago          1075
+   1 PINX_W001  running      63 think time (PL/SQL lock timer)     0 s ago             1
+   2 PINX_W002  running      80 think time (PL/SQL lock timer)     0 s ago             1
+   3 PINX_W003  running      47 ON CPU                             0 s ago             1
 <span class="el">…</span>
-  24 PINX_W024  running      43 think time (PL/SQL lock timer)     2 s ago          1075
+  24 PINX_W024  running      72 think time (PL/SQL lock timer)     0 s ago             1
 
-24 of 24 workers running, 20 ms think time after each execution.
-No test is running: the workers just run the hot query.
-They stop by themselves at 2026-11-05 09:32:39.
-Hot query (sql_id 5wrhf4jjs6mhs): about 1179 executions per second, all workers together (measured over 5 s).
-Its cursor in V$SQL: 1 child cursor(s), 1 loads, 0 invalidations so far.</pre></figure>
+24 of 24 workers running. Each one, in a loop: the hot query on P1, insert 1 row(s) into PCUR, commit, 20 ms think time.
+No test is running: no DDL, the workers just run their loop.
+They stop by themselves at 2026-11-05 13:50:54.
+Hot query (sql_id 5wrhf4jjs6mhs): about 1175 executions per second, all workers together (measured over 5 s).
+Its cursor in V$SQL: 1 child cursor(s), 65 loads, 36 invalidations so far.
+Inserts into PCUR: about 1157 rows per second, all workers together.
+
+<span class="ok">Step 2 done. The workers keep running. Next: ./3_test_drop.sh</span></pre></figure>
         </div>
+        <p class="say">At any later time: <code>./run.sh status</code> prints the worker table again; <code>./run.sh state</code> prints the overview that steps 3 and 4 start and end with (workers, row counts, tests so far).</p>
       </div>
     </section>
 
     <figure class="dgm" style="margin:0 0 40px 82px">
-      <div class="scroll"><svg class="dg" viewBox="0 0 1050 252" role="img" aria-label="Steps 2 to 4 on one clock, 08:32:30 to 08:36:30 on 5 Nov 2026. The workers start in step 2 and keep running. Each test lets them settle, takes an AWR snapshot, runs 10 DDL statements over 60 seconds and takes another AWR snapshot."><text x="0" y="28" class="b">you run</text><text x="0" y="44" class="sm mut">shell script</text>
+      <div class="scroll"><svg class="dg" viewBox="0 0 1050 252" role="img" aria-label="Steps 2 to 4 on one clock, 12:50:30 to 12:54:45 on 5 Nov 2026. The workers start in step 2 and keep running. Each test lets them settle, takes an AWR snapshot, runs 10 DDL statements over 60 seconds and takes another AWR snapshot."><text x="0" y="28" class="b">you run</text><text x="0" y="44" class="sm mut">shell script</text>
 <text x="0" y="88" class="b">controller</text><text x="0" y="104" class="sm mut">pinx_lab session</text>
-<text x="0" y="146" class="b">24 worker jobs</text><text x="0" y="162" class="sm mut">pinx_hot_loop</text>
+<text x="0" y="146" class="b">24 worker jobs</text><text x="0" y="162" class="sm mut">query, insert, commit</text>
 <text x="0" y="205" class="b">AWR snapshot</text>
-<line x1="261.2" y1="14" x2="261.2" y2="224" class="grid"/>
-<text x="261.2" y="242" text-anchor="middle" class="mono sm mut">08:33:00</text>
-<line x1="372.5" y1="14" x2="372.5" y2="224" class="grid"/>
-<text x="372.5" y="242" text-anchor="middle" class="mono sm mut">08:33:30</text>
-<line x1="483.8" y1="14" x2="483.8" y2="224" class="grid"/>
-<text x="483.8" y="242" text-anchor="middle" class="mono sm mut">08:34:00</text>
-<line x1="595.0" y1="14" x2="595.0" y2="224" class="grid"/>
-<text x="595.0" y="242" text-anchor="middle" class="mono sm mut">08:34:30</text>
-<line x1="706.2" y1="14" x2="706.2" y2="224" class="grid"/>
-<text x="706.2" y="242" text-anchor="middle" class="mono sm mut">08:35:00</text>
-<line x1="817.5" y1="14" x2="817.5" y2="224" class="grid"/>
-<text x="817.5" y="242" text-anchor="middle" class="mono sm mut">08:35:30</text>
-<line x1="928.8" y1="14" x2="928.8" y2="224" class="grid"/>
-<text x="928.8" y="242" text-anchor="middle" class="mono sm mut">08:36:00</text>
-<rect x="183.4" y="14" width="7.4" height="26" rx="3" class="box"/>
-<text x="183.4" y="58" class="mono sm">2_start_workers.sh</text>
-<rect x="339.1" y="14" width="281.8" height="26" rx="3" class="box-drop"/><text x="480.0" y="31.0" text-anchor="middle" class="mono sm b">3_test_drop.sh</text>
-<rect x="702.5" y="14" width="270.7" height="26" rx="3" class="box-keep"/><text x="837.9" y="31.0" text-anchor="middle" class="mono sm b">4_test_exchange.sh</text>
-<rect x="339.1" y="74" width="51.9" height="34" rx="3" class="sunk"/><text x="365.1" y="95.0" text-anchor="middle" class="sm">settle</text>
-<rect x="394.8" y="74" width="222.5" height="34" rx="3" class="box-drop"/>
-<line x1="413.3" y1="77" x2="413.3" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="435.5" y1="77" x2="435.5" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="454.1" y1="77" x2="454.1" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="476.3" y1="77" x2="476.3" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="494.9" y1="77" x2="494.9" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="517.1" y1="77" x2="517.1" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="535.7" y1="77" x2="535.7" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="557.9" y1="77" x2="557.9" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="576.5" y1="77" x2="576.5" y2="105" class="ln-drop" style="stroke-width:3"/>
-<line x1="598.7" y1="77" x2="598.7" y2="105" class="ln-drop" style="stroke-width:3"/>
-<text x="397.8" y="68" class="sm t-drop">10 × DROP PARTITION</text>
-<rect x="702.5" y="74" width="40.8" height="34" rx="3" class="sunk"/><text x="722.9" y="95.0" text-anchor="middle" class="sm">settle</text>
-<rect x="747.0" y="74" width="222.5" height="34" rx="3" class="box-keep"/>
-<line x1="765.6" y1="77" x2="765.6" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="787.8" y1="77" x2="787.8" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="806.4" y1="77" x2="806.4" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="828.6" y1="77" x2="828.6" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="847.2" y1="77" x2="847.2" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="869.4" y1="77" x2="869.4" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="888.0" y1="77" x2="888.0" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="910.2" y1="77" x2="910.2" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="928.8" y1="77" x2="928.8" y2="105" class="ln-keep" style="stroke-width:3"/>
-<line x1="947.3" y1="77" x2="947.3" y2="105" class="ln-keep" style="stroke-width:3"/>
-<text x="750.0" y="68" class="sm t-keep">10 × EXCHANGE PARTITION</text>
-<rect x="190.8" y="132" width="834.4" height="34" rx="3" class="sunk"/>
+<line x1="254.7" y1="14" x2="254.7" y2="224" class="grid"/>
+<text x="254.7" y="242" text-anchor="middle" class="mono sm mut">12:51:00</text>
+<line x1="359.4" y1="14" x2="359.4" y2="224" class="grid"/>
+<text x="359.4" y="242" text-anchor="middle" class="mono sm mut">12:51:30</text>
+<line x1="464.1" y1="14" x2="464.1" y2="224" class="grid"/>
+<text x="464.1" y="242" text-anchor="middle" class="mono sm mut">12:52:00</text>
+<line x1="568.8" y1="14" x2="568.8" y2="224" class="grid"/>
+<text x="568.8" y="242" text-anchor="middle" class="mono sm mut">12:52:30</text>
+<line x1="673.5" y1="14" x2="673.5" y2="224" class="grid"/>
+<text x="673.5" y="242" text-anchor="middle" class="mono sm mut">12:53:00</text>
+<line x1="778.2" y1="14" x2="778.2" y2="224" class="grid"/>
+<text x="778.2" y="242" text-anchor="middle" class="mono sm mut">12:53:30</text>
+<line x1="882.9" y1="14" x2="882.9" y2="224" class="grid"/>
+<text x="882.9" y="242" text-anchor="middle" class="mono sm mut">12:54:00</text>
+<line x1="987.6" y1="14" x2="987.6" y2="224" class="grid"/>
+<text x="987.6" y="242" text-anchor="middle" class="mono sm mut">12:54:30</text>
+<rect x="233.8" y="14" width="7.0" height="26" rx="3" class="box"/>
+<text x="227.8" y="32" text-anchor="end" class="mono sm">2_start_workers.sh</text>
+<rect x="300.1" y="14" width="258.3" height="26" rx="3" class="box-drop"/><text x="429.2" y="31.0" text-anchor="middle" class="mono sm b">3_test_drop.sh</text>
+<rect x="649.1" y="14" width="251.3" height="26" rx="3" class="box-keep"/><text x="774.7" y="31.0" text-anchor="middle" class="mono sm b">4_test_exchange.sh</text>
+<rect x="300.1" y="74" width="38.4" height="34" rx="3" class="sunk"/><text x="319.3" y="95.0" text-anchor="middle" class="sm">settle</text>
+<rect x="342.0" y="74" width="209.4" height="34" rx="3" class="box-drop"/>
+<line x1="359.4" y1="77" x2="359.4" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="380.4" y1="77" x2="380.4" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="397.8" y1="77" x2="397.8" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="418.7" y1="77" x2="418.7" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="436.2" y1="77" x2="436.2" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="457.1" y1="77" x2="457.1" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="474.6" y1="77" x2="474.6" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="495.5" y1="77" x2="495.5" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="513.0" y1="77" x2="513.0" y2="105" class="ln-drop" style="stroke-width:3"/>
+<line x1="533.9" y1="77" x2="533.9" y2="105" class="ln-drop" style="stroke-width:3"/>
+<text x="345.0" y="68" class="sm t-drop">10 × DROP PARTITION</text>
+<rect x="649.1" y="74" width="34.9" height="34" rx="3" class="sunk"/><text x="666.5" y="95.0" text-anchor="middle" class="sm">settle</text>
+<rect x="687.5" y="74" width="209.4" height="34" rx="3" class="box-keep"/>
+<line x1="704.9" y1="77" x2="704.9" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="725.9" y1="77" x2="725.9" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="743.3" y1="77" x2="743.3" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="764.3" y1="77" x2="764.3" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="781.7" y1="77" x2="781.7" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="802.7" y1="77" x2="802.7" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="820.1" y1="77" x2="820.1" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="841.1" y1="77" x2="841.1" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="858.5" y1="77" x2="858.5" y2="105" class="ln-keep" style="stroke-width:3"/>
+<line x1="876.0" y1="77" x2="876.0" y2="105" class="ln-keep" style="stroke-width:3"/>
+<text x="690.5" y="68" class="sm t-keep">10 × EXCHANGE PARTITION</text>
+<rect x="240.7" y="132" width="785.3" height="34" rx="3" class="sunk"/>
 <polygon points="1024.0,132 1040.0,149 1024.0,166" class="fill-mut"/>
-<text x="292.8" y="153" text-anchor="middle" class="sm">hot query</text>
-<rect x="394.8" y="132" width="222.5" height="34" rx="3" class="box-drop"/><text x="506.0" y="153.0" text-anchor="middle" class="sm t-drop">waits after each DDL</text>
-<text x="682.1" y="153" text-anchor="middle" class="sm">hot query</text>
-<rect x="747.0" y="132" width="222.5" height="34" rx="3" class="box-keep"/><text x="858.3" y="153.0" text-anchor="middle" class="sm t-keep">no waits</text>
-<polygon points="391.0,190 398.0,199 391.0,208 384.0,199" class="fill-ink"/>
-<text x="401.0" y="204" class="mono sm">38</text>
-<polygon points="621.0,190 628.0,199 621.0,208 614.0,199" class="fill-ink"/>
-<text x="631.0" y="204" class="mono sm">39</text>
-<polygon points="743.3,190 750.3,199 743.3,208 736.3,199" class="fill-ink"/>
-<text x="753.3" y="204" class="mono sm">40</text>
-<polygon points="969.5,190 976.5,199 969.5,208 962.5,199" class="fill-ink"/>
-<text x="979.5" y="204" class="mono sm">41</text></svg></div>
+<text x="291.4" y="153" text-anchor="middle" class="sm">query + insert</text>
+<rect x="342.0" y="132" width="209.4" height="34" rx="3" class="box-drop"/><text x="446.7" y="153.0" text-anchor="middle" class="sm t-drop">waits after each DDL</text>
+<text x="619.4" y="153" text-anchor="middle" class="sm">query + insert</text>
+<rect x="687.5" y="132" width="209.4" height="34" rx="3" class="box-keep"/><text x="792.2" y="153.0" text-anchor="middle" class="sm t-keep">no pile-up</text>
+<polygon points="338.5,190 345.5,199 338.5,208 331.5,199" class="fill-ink"/>
+<text x="348.5" y="204" class="mono sm">66</text>
+<polygon points="558.4,190 565.4,199 558.4,208 551.4,199" class="fill-ink"/>
+<text x="568.4" y="204" class="mono sm">67</text>
+<polygon points="684.0,190 691.0,199 684.0,208 677.0,199" class="fill-ink"/>
+<text x="694.0" y="204" class="mono sm">68</text>
+<polygon points="896.9,190 903.9,199 896.9,208 889.9,199" class="fill-ink"/>
+<text x="906.9" y="204" class="mono sm">69</text></svg></div>
       <figcaption><b>Steps 2 to 4, to scale</b>, from the timestamps in the script output. Tick: one DDL statement. Diamond: AWR snapshot, with snapshot ID.</figcaption>
     </figure>
 
     <section class="stop drop" id="step-3">
       <div class="mark"><span class="num">3</span></div>
       <div class="body">
-        <div class="head"><h3><span class="f">3_test_drop.sh</span></h3><span class="when">08:33:18 · test done 08:34:37</span>
+        <div class="head"><h3><span class="f">3_test_drop.sh</span></h3><span class="when">12:51:02 · test done 12:52:27</span>
           <div class="chips"><span class="chip sql">test_drop.sql</span><span class="chip sql">pinx_lab.run_case('DROP')</span><span class="chip sql">evidence.sql</span><span class="chip sql">report.sql</span><span class="chip file">reports/</span></div></div>
-        <p class="say">DROP test: 10 <code>DROP PARTITION</code> statements, one every 5.5 s, with the workers running.</p>
+        <p class="say">DROP test: 10 <code>DROP PARTITION</code> statements, one every 5.5 s, with the workers running. Before and after the DDL the script prints the overview. After each DDL it prints what the workers are doing 0.5 s later, the rows in the dropped partition, and whether each cursor was invalidated.</p>
         <div class="pair">
           <figure class="term you"><figcaption><span>you type</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./3_test_drop.sh</span></pre></figure>
           <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>======================================================================
-  3/5  Test: DROP PARTITION under load    2026-11-05 08:33:18
+  3/5  Test: DROP PARTITION under load    2026-11-05 12:51:02
 ======================================================================
 
+==== Before the DROP test: workers, data, tests so far
+
+Workers
+  24 of 24 worker jobs running, 24 with a heartbeat in the last 15 s
+  each one, in a loop: the hot query on P1, insert 1 row(s) into PCUR, commit, 20 ms think time
+  no test running: no DDL, they just run their loop
+  they stop by themselves at 2026-11-05 13:50:54
+  doing right now: 24 think time
+  hot query (sql_id 5wrhf4jjs6mhs): 1 child cursor(s), 65 loads, 36 invalidations, 15761 executions in total
+    about 1170 executions per second (measured over 5 s)
+  insert    (sql_id c1a8kv5yb4741): 2 child cursor(s), 65 loads, 42 invalidations, 15770 executions in total
+    about 1165 rows inserted per second (measured over 5 s)
+
+Tables T and T_X
+
+TABLE / PARTITION              ROWS NOTE                                                                                      
+---------------------- ------------ ------------------------------------------------------------------------------------------
+T                           416,362 400 partitions plus PCUR, 0 of them empty                                                 
+  PCUR                       16,362 current partition: the workers insert into it; no test changes it                         
+  P400                        1,000 highest below PCUR: the DROP test drops it, the EXCHANGE test exchanges it with T_X       
+<span class="el">  …</span>
+  P2 ... P390               389,000 389 partitions, 0 of them empty                                                           
+  P1                          1,000 read by the hot query; no test changes it                                                 
+T_X                               0 exchange table, not partitioned                                                           
+
+Tests run so far
+  none yet
+
 ==== DROP PARTITION test (about 10 + 60 s)
-08:33:21  ---- DROP test: 24 workers already running, 400 partitions, 2000 ms per hard parse, 10 DDLs over 60 s (+10 s settle)
-08:33:21  workers settling for 10 s
-08:33:35  AWR snapshot 38 (before)
-08:33:36  window open (hot cursor sql_id 5wrhf4jjs6mhs)
-08:33:41  DDL 1/10 (76.1 ms): alter table t drop partition p400 update indexes
-08:33:47  DDL 2/10 (66.2 ms): alter table t drop partition p399 update indexes
-08:33:52  DDL 3/10 (38.1 ms): alter table t drop partition p398 update indexes
-08:33:58  DDL 4/10 (30.4 ms): alter table t drop partition p397 update indexes
-08:34:03  DDL 5/10 (33.4 ms): alter table t drop partition p396 update indexes
-08:34:09  DDL 6/10 (29.5 ms): alter table t drop partition p395 update indexes
-08:34:14  DDL 7/10 (31.8 ms): alter table t drop partition p394 update indexes
-08:34:20  DDL 8/10 (34 ms): alter table t drop partition p393 update indexes
-08:34:25  DDL 9/10 (31.9 ms): alter table t drop partition p392 update indexes
-08:34:31  DDL 10/10 (39.8 ms): alter table t drop partition p391 update indexes
-08:34:36  window closed
-08:34:37  AWR snapshot 39 (after)
-08:34:37  ASH: 3 events captured
-08:34:37  DROP test run 1 complete; the workers keep running
+12:51:13  ---- DROP test: 24 workers already running (hot query + 1 insert(s) into PCUR), 400 partitions plus PCUR, 2000 ms per hard parse, 10 DDLs over 60 s (+10 s settle)
+12:51:13  workers settling for 10 s
+12:51:24  AWR snapshot 66 (before)
+12:51:25  window open (hot query sql_id 5wrhf4jjs6mhs, insert sql_id c1a8kv5yb4741)
+12:51:25    hot query cursor: 1 child cursor(s), 65 loads, 36 invalidations
+12:51:25    insert cursor:    2 child cursor(s), 65 loads, 42 invalidations
+12:51:25    workers: 23 think time, 1 on CPU
+12:51:30  DDL 1/10 (33.1 ms): alter table t drop partition p400 update indexes
+12:51:31    0.5 s later, workers: 23 cursor: pin S wait on X, 1 on CPU
+12:51:31    P400 had 1000 rows and is gone; T has 399 partitions plus PCUR
+12:51:36    hot query cursor after DDL 1: INVALIDATED, parsed again (now 1 child cursor(s), 31 loads, 30 invalidations)
+12:51:36    insert    cursor after DDL 1: INVALIDATED, parsed again (now 1 child cursor(s), 1 loads, 0 invalidations)
+12:51:36  DDL 2/10 (20.3 ms): alter table t drop partition p399 update indexes
+12:51:36    0.5 s later, workers: 23 cursor: pin S wait on X, 1 on CPU
+12:51:36    P399 had 1000 rows and is gone; T has 398 partitions plus PCUR
+12:51:41    hot query cursor after DDL 2: INVALIDATED, parsed again (now 1 child cursor(s), 67 loads, 37 invalidations)
+12:51:41    insert    cursor after DDL 2: INVALIDATED, parsed again (now 1 child cursor(s), 46 loads, 23 invalidations)
+<span class="el">…</span>
+12:52:20    hot query cursor after DDL 9: INVALIDATED, parsed again (now 1 child cursor(s), 35 loads, 34 invalidations)
+12:52:20    insert    cursor after DDL 9: INVALIDATED, parsed again (now 1 child cursor(s), 26 loads, 24 invalidations)
+12:52:20  DDL 10/10 (16 ms): alter table t drop partition p391 update indexes
+12:52:20    0.5 s later, workers: 23 cursor: pin S wait on X, 1 on CPU
+12:52:20    P391 had 1000 rows and is gone; T has 390 partitions plus PCUR
+12:52:25    hot query cursor after DDL 10: INVALIDATED, parsed again (now 1 child cursor(s), 75 loads, 41 invalidations)
+12:52:25    insert    cursor after DDL 10: INVALIDATED, parsed again (now 1 child cursor(s), 54 loads, 27 invalidations)
+12:52:25  window closed; workers: 24 think time
+12:52:27  AWR snapshot 67 (after)
+12:52:27  ASH: 4 events captured
+12:52:27  DROP test run 1 complete; the workers keep running
+
+==== After the DROP test: workers, data, tests so far
+
+Workers
+  24 of 24 worker jobs running, 24 with a heartbeat in the last 15 s
+  each one, in a loop: the hot query on P1, insert 1 row(s) into PCUR, commit, 20 ms think time
+  no test running: no DDL, they just run their loop
+  they stop by themselves at 2026-11-05 13:50:54
+  doing right now: 24 think time
+  hot query (sql_id 5wrhf4jjs6mhs): 1 child cursor(s), 75 loads, 41 invalidations, 11729 executions in total
+    about 1171 executions per second (measured over 5 s)
+  insert    (sql_id c1a8kv5yb4741): 1 child cursor(s), 54 loads, 27 invalidations, 11734 executions in total
+    about 1168 rows inserted per second (measured over 5 s)
+
+Tables T and T_X
+
+TABLE / PARTITION              ROWS NOTE                                                                                      
+---------------------- ------------ ------------------------------------------------------------------------------------------
+T                           477,523 390 partitions plus PCUR, 0 of them empty                                                 
+  PCUR                       87,523 current partition: the workers insert into it; no test changes it                         
+  P390                        1,000 highest below PCUR: the DROP test drops it, the EXCHANGE test exchanges it with T_X       
+<span class="el">  …</span>
+  P2 ... P380               379,000 379 partitions, 0 of them empty                                                           
+  P1                          1,000 read by the hot query; no test changes it                                                 
+T_X                               0 exchange table, not partitioned                                                           
+
+Tests run so far
+  run 1  DROP     DONE    2026-11-05 12:51:13  10 of 10 DDLs, T had 400 partitions at the start
 
 ==== Writing evidence to reports/
 reports/pinx_timeline_r1.html   (open this one)
-reports/pinx_run1_drop_ash.html   (Oracle ASH report, 2026-11-05 08:33:36 to 2026-11-05 08:34:37)
-reports/pinx_run1_drop_awr.html   (Oracle AWR report, snapshots 38 to 39)
+reports/pinx_run1_drop_ash.html   (Oracle ASH report, 2026-11-05 12:51:25 to 2026-11-05 12:52:26)
+reports/pinx_run1_drop_awr.html   (Oracle AWR report, snapshots 66 to 67)
 
 ==== Metrics (window only: after warm-up, until the quiet tail ends)
 
 Metric                                                        A: DROP          B: EXCHANGE
 ------------------------------------------------ -------------------- --------------------
 Hot cursor: DDLs that invalidated it                         10 of 10                    -
-Workers: executions per second                                    797                    -
-Workers: waits on cursor: pin S wait on X                         230                    -
-Workers: time in cursor: pin S wait on X (ms)                  459529                    -
+Insert cursor: DDLs that invalidated it                      10 of 10                    -
+Workers: executions per second                                    798                    -
+Workers: rows inserted per second                                 798                    -
+Workers: hard parses                                               52                    -
+Workers: waits on cursor: pin S wait on X                         233                    -
+Workers: time in cursor: pin S wait on X (ms)                  460032                    -
 <span class="el">…</span>
 
 ==== Checks
@@ -440,7 +530,7 @@ Workers: time in cursor: pin S wait on X (ms)                  459529           
 KIND     Check                                Expected   Actual     Result
 -------- ------------------------------------ ---------- ---------- ------
 DROP     DDLs that invalidated the hot cursor 10         10         PASS  
-DROP     Waits on cursor: pin S wait on X     &gt; 0        230        PASS  
+DROP     Time in pin S wait on X (ms)         &gt; 2000     460032     PASS  
 <span class="el">…</span>
 
 <span class="ok">OVERALL: PASS (8 checks) - DROP test only so far; run ./4_test_exchange.sh to compare</span>
@@ -453,50 +543,121 @@ DROP     Waits on cursor: pin S wait on X     &gt; 0        230        PASS
     <section class="stop keep" id="step-4">
       <div class="mark"><span class="num">4</span></div>
       <div class="body">
-        <div class="head"><h3><span class="f">4_test_exchange.sh</span></h3><span class="when">08:34:56 · test done 08:36:12</span>
+        <div class="head"><h3><span class="f">4_test_exchange.sh</span></h3><span class="when">12:52:42 · test done 12:54:05</span>
           <div class="chips"><span class="chip sql">test_exchange.sql</span><span class="chip sql">pinx_lab.run_case('EXCHANGE')</span><span class="chip sql">evidence.sql</span><span class="chip sql">report.sql</span><span class="chip file">reports/</span></div></div>
-        <p class="say">EXCHANGE test: 10 <code>EXCHANGE PARTITION</code> statements (highest partition with <code>T_X</code>), one every 5.5 s, with the same workers running. The report lists both tests.</p>
+        <p class="say">EXCHANGE test: 10 <code>EXCHANGE PARTITION</code> statements (<code>P390</code>, the highest partition below <code>PCUR</code>, with <code>T_X</code>), one every 5.5 s, with the same workers running. The rows move between <code>P390</code> and <code>T_X</code> with each exchange. The hot query cursor stays valid; the insert cursor is invalidated by every exchange and re-parsed. The report lists both tests.</p>
         <div class="pair">
           <figure class="term you"><figcaption><span>you type</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./4_test_exchange.sh</span></pre></figure>
           <figure class="term"><figcaption><span>screen</span><span>shortened</span></figcaption><pre>======================================================================
-  4/5  Test: EXCHANGE PARTITION under load    2026-11-05 08:34:56
+  4/5  Test: EXCHANGE PARTITION under load    2026-11-05 12:52:42
 ======================================================================
 
+==== Before the EXCHANGE test: workers, data, tests so far
+
+Workers
+  24 of 24 worker jobs running, 24 with a heartbeat in the last 15 s
+  each one, in a loop: the hot query on P1, insert 1 row(s) into PCUR, commit, 20 ms think time
+  no test running: no DDL, they just run their loop
+  they stop by themselves at 2026-11-05 13:50:54
+  doing right now: 24 think time
+  hot query (sql_id 5wrhf4jjs6mhs): 1 child cursor(s), 75 loads, 41 invalidations, 31425 executions in total
+    about 1169 executions per second (measured over 5 s)
+  insert    (sql_id c1a8kv5yb4741): 1 child cursor(s), 54 loads, 27 invalidations, 31436 executions in total
+    about 1166 rows inserted per second (measured over 5 s)
+
+Tables T and T_X
+
+TABLE / PARTITION              ROWS NOTE                                                                                      
+---------------------- ------------ ------------------------------------------------------------------------------------------
+T                           497,495 390 partitions plus PCUR, 0 of them empty                                                 
+  PCUR                      107,495 current partition: the workers insert into it; no test changes it                         
+  P390                        1,000 highest below PCUR: the DROP test drops it, the EXCHANGE test exchanges it with T_X       
+<span class="el">  …</span>
+  P2 ... P380               379,000 379 partitions, 0 of them empty                                                           
+  P1                          1,000 read by the hot query; no test changes it                                                 
+T_X                               0 exchange table, not partitioned                                                           
+
+Tests run so far
+  run 1  DROP     DONE    2026-11-05 12:51:13  10 of 10 DDLs, T had 400 partitions at the start
+
 ==== EXCHANGE PARTITION test (about 10 + 60 s)
-08:34:59  ---- EXCHANGE test: 24 workers already running, 390 partitions, 2000 ms per hard parse, 10 DDLs over 60 s (+10 s settle)
-08:34:59  workers settling for 10 s
-08:35:10  AWR snapshot 40 (before)
-08:35:11  window open (hot cursor sql_id 5wrhf4jjs6mhs)
-08:35:16  DDL 1/10 (35.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:35:22  DDL 2/10 (11.6 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:35:27  DDL 3/10 (10.4 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:35:33  DDL 4/10 (13.3 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:35:38  DDL 5/10 (9.9 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:35:44  DDL 6/10 (11.6 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:35:49  DDL 7/10 (9.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:35:55  DDL 8/10 (10.7 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:36:00  DDL 9/10 (13.1 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:36:05  DDL 10/10 (14.4 ms): alter table t exchange partition p390 with table t_x including indexes without validation
-08:36:11  window closed
-08:36:11  AWR snapshot 41 (after)
-08:36:12  ASH: 1 events captured
-08:36:12  EXCHANGE test run 2 complete; the workers keep running
+12:52:53  ---- EXCHANGE test: 24 workers already running (hot query + 1 insert(s) into PCUR), 390 partitions plus PCUR, 2000 ms per hard parse, 10 DDLs over 60 s (+10 s settle)
+12:52:53  workers settling for 10 s
+12:53:03  AWR snapshot 68 (before)
+12:53:04  window open (hot query sql_id 5wrhf4jjs6mhs, insert sql_id c1a8kv5yb4741)
+12:53:04    hot query cursor: 1 child cursor(s), 75 loads, 41 invalidations
+12:53:04    insert cursor:    1 child cursor(s), 54 loads, 27 invalidations
+12:53:04    workers: 24 think time
+12:53:09  DDL 1/10 (16.6 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+12:53:10    0.5 s later, workers: 23 think time, 1 on CPU
+12:53:10    P390 now has 0 rows, T_X has 1000 rows
+12:53:15    hot query cursor after DDL 1: still valid, not parsed again (now 1 child cursor(s), 75 loads, 41 invalidations)
+12:53:15    insert    cursor after DDL 1: INVALIDATED, parsed again (now 1 child cursor(s), 27 loads, 25 invalidations)
+12:53:15  DDL 2/10 (9.4 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+12:53:15    0.5 s later, workers: 24 think time
+12:53:15    P390 now has 1000 rows, T_X has 0 rows
+12:53:20    hot query cursor after DDL 2: still valid, not parsed again (now 1 child cursor(s), 75 loads, 41 invalidations)
+12:53:20    insert    cursor after DDL 2: INVALIDATED, parsed again (now 1 child cursor(s), 56 loads, 28 invalidations)
+<span class="el">…</span>
+12:53:58    hot query cursor after DDL 9: still valid, not parsed again (now 1 child cursor(s), 75 loads, 41 invalidations)
+12:53:58    insert    cursor after DDL 9: INVALIDATED, parsed again (now 1 child cursor(s), 31 loads, 29 invalidations)
+12:53:58  DDL 10/10 (19.4 ms): alter table t exchange partition p390 with table t_x including indexes without validation
+12:53:59    0.5 s later, workers: 24 think time
+12:53:59    P390 now has 1000 rows, T_X has 0 rows
+12:54:04    hot query cursor after DDL 10: still valid, not parsed again (now 1 child cursor(s), 75 loads, 41 invalidations)
+12:54:04    insert    cursor after DDL 10: INVALIDATED, parsed again (now 1 child cursor(s), 63 loads, 32 invalidations)
+12:54:04  window closed; workers: 23 think time, 1 on CPU
+12:54:04  AWR snapshot 69 (after)
+12:54:05  ASH: 1 events captured
+12:54:05  EXCHANGE test run 2 complete; the workers keep running
+
+==== After the EXCHANGE test: workers, data, tests so far
+
+Workers
+  24 of 24 worker jobs running, 24 with a heartbeat in the last 15 s
+  each one, in a loop: the hot query on P1, insert 1 row(s) into PCUR, commit, 20 ms think time
+  no test running: no DDL, they just run their loop
+  they stop by themselves at 2026-11-05 13:50:54
+  doing right now: 24 think time
+  hot query (sql_id 5wrhf4jjs6mhs): 1 child cursor(s), 75 loads, 41 invalidations, 123354 executions in total
+    about 1172 executions per second (measured over 5 s)
+  insert    (sql_id c1a8kv5yb4741): 1 child cursor(s), 63 loads, 32 invalidations, 12834 executions in total
+    about 1172 rows inserted per second (measured over 5 s)
+
+Tables T and T_X
+
+TABLE / PARTITION              ROWS NOTE                                                                                      
+---------------------- ------------ ------------------------------------------------------------------------------------------
+T                           589,210 390 partitions plus PCUR, 0 of them empty                                                 
+  PCUR                      199,210 current partition: the workers insert into it; no test changes it                         
+  P390                        1,000 highest below PCUR: the DROP test drops it, the EXCHANGE test exchanges it with T_X       
+<span class="el">  …</span>
+  P2 ... P380               379,000 379 partitions, 0 of them empty                                                           
+  P1                          1,000 read by the hot query; no test changes it                                                 
+T_X                               0 exchange table, not partitioned                                                           
+
+Tests run so far
+  run 1  DROP     DONE    2026-11-05 12:51:13  10 of 10 DDLs, T had 400 partitions at the start
+  run 2  EXCHANGE DONE    2026-11-05 12:52:53  10 of 10 DDLs, T had 390 partitions at the start
 
 ==== Writing evidence to reports/
 reports/pinx_timeline_r1_r2.html   (open this one)
-reports/pinx_run1_drop_ash.html   (Oracle ASH report, 2026-11-05 08:33:36 to 2026-11-05 08:34:37)
-reports/pinx_run1_drop_awr.html   (Oracle AWR report, snapshots 38 to 39)
-reports/pinx_run2_exchange_ash.html   (Oracle ASH report, 2026-11-05 08:35:11 to 2026-11-05 08:36:12)
-reports/pinx_run2_exchange_awr.html   (Oracle AWR report, snapshots 40 to 41)
+reports/pinx_run1_drop_ash.html   (Oracle ASH report, 2026-11-05 12:51:25 to 2026-11-05 12:52:26)
+reports/pinx_run1_drop_awr.html   (Oracle AWR report, snapshots 66 to 67)
+reports/pinx_run2_exchange_ash.html   (Oracle ASH report, 2026-11-05 12:53:04 to 2026-11-05 12:54:05)
+reports/pinx_run2_exchange_awr.html   (Oracle AWR report, snapshots 68 to 69)
 
 ==== Metrics (window only: after warm-up, until the quiet tail ends)
 
 Metric                                                        A: DROP          B: EXCHANGE
 ------------------------------------------------ -------------------- --------------------
 Hot cursor: DDLs that invalidated it                         10 of 10              0 of 10
-Workers: executions per second                                    797                 1176
-Workers: waits on cursor: pin S wait on X                         230                    0
-Workers: time in cursor: pin S wait on X (ms)                  459529                    0
+Insert cursor: DDLs that invalidated it                      10 of 10             10 of 10
+Workers: executions per second                                    798                 1162
+Workers: rows inserted per second                                 798                 1162
+Workers: hard parses                                               52                   10
+Workers: waits on cursor: pin S wait on X                         233                   43
+Workers: time in cursor: pin S wait on X (ms)                  460032                  136
 <span class="el">…</span>
 
 ==== Checks
@@ -505,7 +666,8 @@ KIND     Check                                Expected   Actual     Result
 -------- ------------------------------------ ---------- ---------- ------
 DROP     DDLs that invalidated the hot cursor 10         10         PASS  
 EXCHANGE DDLs that invalidated the hot cursor 0          0          PASS  
-EXCHANGE Waits on cursor: pin S wait on X     0          0          PASS  
+EXCHANGE Time in pin S wait on X (ms)         &lt; 2000     136        PASS  
+EXCHANGE Worker hard parses                   &lt;= 10      10         PASS  
 <span class="el">…</span>
 
 <span class="ok">OVERALL: PASS (17 checks)</span>
@@ -514,10 +676,10 @@ EXCHANGE Waits on cursor: pin S wait on X     0          0          PASS
         </div>
         <div class="files">
           <div class="fileitem main"><code>reports/pinx_timeline_r1_r2.html</code><span>ASH timeline of both tests, with each DDL marked</span></div>
-          <div class="fileitem"><code>reports/pinx_run1_drop_ash.html</code><span>Oracle ASH report, DROP test window</span></div>
-          <div class="fileitem"><code>reports/pinx_run1_drop_awr.html</code><span>Oracle AWR report, snapshots 38 and 39</span></div>
-          <div class="fileitem"><code>reports/pinx_run2_exchange_ash.html</code><span>Oracle ASH report, EXCHANGE test window</span></div>
-          <div class="fileitem"><code>reports/pinx_run2_exchange_awr.html</code><span>Oracle AWR report, snapshots 40 and 41</span></div>
+          <div class="fileitem"><code>reports/pinx_run1_drop_ash.html</code><span>Oracle ASH report, 2026-11-05 12:51:25 to 2026-11-05 12:52:26</span></div>
+          <div class="fileitem"><code>reports/pinx_run1_drop_awr.html</code><span>Oracle AWR report, snapshots 66 to 67</span></div>
+          <div class="fileitem"><code>reports/pinx_run2_exchange_ash.html</code><span>Oracle ASH report, 2026-11-05 12:53:04 to 2026-11-05 12:54:05</span></div>
+          <div class="fileitem"><code>reports/pinx_run2_exchange_awr.html</code><span>Oracle AWR report, snapshots 68 to 69</span></div>
           <div class="fileitem"><code>logs/</code><span>One log file per script, containing the screen output</span></div>
         </div>
       </div>
@@ -526,13 +688,13 @@ EXCHANGE Waits on cursor: pin S wait on X     0          0          PASS
     <section class="stop" id="step-5">
       <div class="mark"><span class="num">5</span></div>
       <div class="body">
-        <div class="head"><h3><span class="f">5_cleanup.sh</span></h3><span class="when">08:38:10 · 13 s</span>
+        <div class="head"><h3><span class="f">5_cleanup.sh</span></h3><span class="when">12:54:18</span>
           <div class="chips"><span class="chip dba">admin/drop_user.sql</span></div></div>
         <p class="say">Stops the worker jobs and drops user <code>PINX</code> with all its objects. <code>reports/</code> and <code>logs/</code> are not changed.</p>
         <div class="pair">
           <figure class="term you"><figcaption><span>you type</span></figcaption><pre><span class="pr">$</span> <span class="cmd">./5_cleanup.sh</span></pre></figure>
           <figure class="term"><figcaption><span>screen</span></figcaption><pre>======================================================================
-  5/5  Clean up: workers, user PINX and everything it owns    2026-11-05 08:38:10
+  5/5  Clean up: workers, user PINX and everything it owns    2026-11-05 12:54:18
 ======================================================================
 
 Stopping 24 running worker jobs.
@@ -545,7 +707,7 @@ User PINX dropped, with everything it owned.
   </div>
 
   <footer>
-    <span>Screen output: run of 5 Nov 2026, SQLcl. Omitted from step 1: two lines ("Session altered." and "SQL Format Cleared") that the current scripts no longer print. Omitted from step 2: the worker table; its executions-per-second line had a bug, corrected before the <code>./run.sh status</code> shown below it. Step 5 ran at 08:38:10, after additional tests of restarting the workers and rebuilding the table. <i>&lt;password&gt;</i> replaces the actual value; “…” marks omitted lines.</span>
-    <span>Connections: <code>connection.conf</code> with <code>PINX_SERVICE=//localhost:1521/pdb1.world</code>, <code>DBA_CONNECT='/ as sysdba'</code>, <code>DBA_CONTAINER=PDB1</code>. Settings: <code>config.sql</code> with 400 partitions, 24 workers, 20 ms think time, 10 DDLs over 60 s, 10 s settle, 2000 ms per hard parse, <code>AWR = AUTO</code>.</span>
+    <span>Screen output: run of 5 Nov 2026, SQLcl, from the script logs; the step banners are reconstructed from the log times. “…” marks omitted lines: most preflight checks, most of the worker table, most of the partition list, DDL 3 to 9 of each test, and most metric and check rows. <i>&lt;password&gt;</i> replaces the actual value.</span>
+    <span>Connections: <code>connection.conf</code> with <code>PINX_SERVICE=//localhost:1521/pdb1.world</code>, <code>DBA_CONNECT='/ as sysdba'</code>, <code>DBA_CONTAINER=PDB1</code>. Settings: <code>config.sql</code> with 400 partitions, 24 workers, 1 insert per loop, 20 ms think time, 10 DDLs over 60 s, 10 s settle, 2000 ms per hard parse, <code>AWR = AUTO</code>.</span>
   </footer>
 </main>

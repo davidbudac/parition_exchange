@@ -144,6 +144,7 @@ begin
   if &SECS < 10 then bad('SECS must be at least 10.'); end if;
   if &WARMUP < 3 then bad('WARMUP must be at least 3.'); end if;
   if &WORKER_MINUTES < 5 or &WORKER_MINUTES > 1440 then bad('WORKER_MINUTES must be between 5 and 1440.'); end if;
+  if &INSERTS < 0 or &INSERTS > 100 then bad('INSERTS must be between 0 and 100.'); end if;
   if &PARSE_MS < 0 or &PARSE_MS > 10000 then bad('PARSE_MS must be between 0 and 10000.'); end if;
   if &PARSE_MS * 1.5 > &SECS * 1000 / (&NDDL + 1) then
     warn('PARSE_MS is long compared with the gap between DDLs (SECS / (NDDL+1)); pile-ups may overlap.');
@@ -156,8 +157,10 @@ begin
 
   -- 8. Space ---------------------------------------------------------------
   -- T + local index + T_X: roughly 400 bytes per row incl. extent overhead,
-  -- 1000 rows per partition. Space held by an existing T / T_X counts as
-  -- free, because the build drops and rebuilds them.
+  -- 1000 rows per partition. Plus the workers' inserts into PCUR: about
+  -- 150 MB per hour per inserted row per execution, for WORKER_MINUTES.
+  -- Space held by an existing T / T_X counts as free, because the build
+  -- drops and rebuilds them.
   select count(*) into l_cnt
   from   user_ts_quotas q, user_users u
   where  q.tablespace_name = u.default_tablespace
@@ -165,12 +168,15 @@ begin
          or q.max_bytes - q.bytes
             + (select nvl(sum(bytes), 0) from user_segments
                where segment_name in ('T', 'T_X', 'T_GRP', 'T_X_GRP'))
-            >= &NPART * 1000 * 400);
+            >= &NPART * 1000 * 400 + &INSERTS * 157286400.0 * &WORKER_MINUTES / 60);
   if l_cnt > 0 or has_sys_priv('UNLIMITED TABLESPACE') then
-    ok('Quota on default tablespace for about '||round(&NPART * 1000 * 400 / 1048576)||' MB');
+    ok('Quota on default tablespace for about '||
+       round((&NPART * 1000 * 400 + &INSERTS * 157286400.0 * &WORKER_MINUTES / 60) / 1048576)||
+       ' MB (the table, and the inserts of one WORKER_MINUTES period)');
   else
     bad('Not enough quota on the default tablespace (need about '||
-        round(&NPART * 1000 * 400 / 1048576)||' MB).');
+        round((&NPART * 1000 * 400 + &INSERTS * 157286400.0 * &WORKER_MINUTES / 60) / 1048576)||
+        ' MB: the table, and the inserts of one WORKER_MINUTES period).');
   end if;
 
   if l_errors > 0 then

@@ -7,17 +7,25 @@ proves the answer with Oracle's own diagnostics:
 > that the hot query never reads still disturb that query?
 
 It compares two ways of getting rid of a partition's data while 24
-sessions keep running the same SQL statement:
+sessions keep running the same loop: the hot query on partition `P1`,
+then an `INSERT` of one row into the current partition `PCUR` and a
+`COMMIT`.
 
-| Test | DDL | What 19c does to the hot cursor | Effect on the sessions |
-|------|-----|---------------------------------|------------------------|
-| **DROP** (step 3) | `ALTER TABLE t DROP PARTITION p400 UPDATE INDEXES` | **Invalidates** it, on every drop | Everyone needs the cursor at once. One session hard-parses while all the others queue on **`cursor: pin S wait on X`** (a hard-parse pile-up). |
-| **EXCHANGE** (step 4) | `ALTER TABLE t EXCHANGE PARTITION p390 WITH TABLE t_x INCLUDING INDEXES WITHOUT VALIDATION` | **Leaves it valid** (fine-grained cursor invalidation, 12.2+) | Nothing happens: no reparse, no waits. |
+| Test | DDL | Hot query cursor | Insert cursor | Effect on the sessions |
+|------|-----|------------------|---------------|------------------------|
+| **DROP** (step 3) | `ALTER TABLE t DROP PARTITION p400 UPDATE INDEXES` | **Invalidated** by every drop | Invalidated by every drop | One session hard-parses the hot query (2 s) while all the others queue on **`cursor: pin S wait on X`** (a hard-parse pile-up). |
+| **EXCHANGE** (step 4) | `ALTER TABLE t EXCHANGE PARTITION p390 WITH TABLE t_x INCLUDING INDEXES WITHOUT VALIDATION` | **Stays valid** (fine-grained cursor invalidation, 12.2+) | Invalidated by every exchange | The insert is re-parsed in a few milliseconds: short waits only (0.14 s in total over 10 exchanges). No pile-up. |
 
-The hot query reads only partition `P1`, so neither DDL changes its
-result. The DROP pile-up is pure overhead caused by cursor invalidation.
-That's why "exchange the partition out, then drop the swapped-out table
-later" is the low-impact way to age out data on a busy system.
+The hot query reads only `P1` and the inserts go only to `PCUR`; neither
+DDL touches those partitions. The DROP pile-up is overhead caused by
+cursor invalidation. That's why "exchange the partition out, then drop
+the swapped-out table later" is the low-impact way to age out data on a
+busy system.
+
+The `INSERT ... VALUES` cursor is invalidated by both DDLs (measured on
+19.27). Its parse is cheap, so this costs milliseconds. A DML statement
+with an expensive parse would be expected to pile up after an EXCHANGE
+as well; this harness does not test that.
 
 **Read the illustrated guide first:** [`docs/guide.html`](docs/guide.html)
 explains the mechanism with diagrams, shows the measurements from a real
@@ -30,8 +38,8 @@ The test is split into five scripts you run one after the other:
 
 | Script | Runs as | What it does |
 |--------|---------|--------------|
-| `./1_build.sh` | DBA, then PINX | Creates the user `PINX`, installs the harness objects, builds table `T` (400 partitions, 400,000 rows) and `T_X`. |
-| `./2_start_workers.sh` | PINX | Starts 24 background jobs that run the hot query over and over, then shows them working. Nothing else happens. They keep running. |
+| `./1_build.sh` | DBA, then PINX | Creates the user `PINX`, installs the harness objects, builds table `T` (400 partitions, 400,000 rows, plus the empty current partition `PCUR`) and `T_X`. |
+| `./2_start_workers.sh` | PINX | Starts 24 background jobs. Each one runs the hot query, inserts a row into `PCUR` and commits, over and over. Then shows them working. No DDL. They keep running. |
 | `./3_test_drop.sh` | PINX | The DROP test, against the running workers. Prints the results and writes the reports. |
 | `./4_test_exchange.sh` | PINX | The EXCHANGE test, against the same workers. Prints both tests side by side. |
 | `./5_cleanup.sh` | DBA | Stops the workers and drops the user with everything in it. |
@@ -52,7 +60,8 @@ The harness:
 ## What the evidence looks like
 
 From a real run of the five steps on 19.27 (2 CPUs, PDB, default
-settings, 5 Nov 2026).
+settings, 5 Nov 2026, 12:50 to 12:54). The same run is shown in
+`docs/guide.html` and `docs/story.html`.
 
 **The timeline** (`reports/pinx_timeline_r<A>_r<B>.html`):
 * **DROP test:** after every red DDL marker, a red column of 23 sessions
@@ -63,17 +72,17 @@ settings, 5 Nov 2026).
 **Oracle AWR report**, Top 10 Foreground Events:
 
 ```
-DROP        cursor: pin S wait on X   272 waits   459.9 s   88.2% DB time   Concurrency
-            DB CPU                                 54.7 s   10.5% DB time
-EXCHANGE    DB CPU                                 40.5 s   87.7% DB time
-            (no cursor: pin S wait on X at all)
+DROP        cursor: pin S wait on X   279 waits   460.4 s   87.5% DB time   Concurrency
+            DB CPU                                 55.1 s   10.5% DB time
+EXCHANGE    DB CPU                                 45.5 s   78.8% DB time
+            cursor: pin S wait on X    43 waits     0.1 s    0.2% DB time   (the insert's re-parses)
 ```
 
 **Oracle ASH report**, Top User Events:
 
 ```
-DROP        cursor: pin S wait on X   90.7%   7.16 average active sessions
-EXCHANGE    CPU + Wait for CPU       100.0%   0.56 average active sessions
+DROP        cursor: pin S wait on X   90.4%   7.69 average active sessions
+EXCHANGE    CPU + Wait for CPU       100.0%   0.64 average active sessions
 ```
 
 **Text report** (`report.sql`, licence-free counters):
@@ -81,17 +90,22 @@ EXCHANGE    CPU + Wait for CPU       100.0%   0.56 average active sessions
 ```
 Metric                                                        A: DROP          B: EXCHANGE
 Hot cursor: DDLs that invalidated it                         10 of 10              0 of 10
+Insert cursor: DDLs that invalidated it                      10 of 10             10 of 10
 Hot cursor: ddl_no_invalidate (at end)                              N                    X
-Workers: executions per second                                    797                 1176
-Workers: waits on cursor: pin S wait on X                         230                    0
-Workers: time in cursor: pin S wait on X (ms)                  459529                    0
-ASH samples: cursor: pin S wait on X                              437                    -
+Workers: executions per second                                    798                 1162
+Workers: rows inserted per second                                 798                 1162
+Workers: hard parses                                               52                   10
+Workers: waits on cursor: pin S wait on X                         233                   43
+Workers: time in cursor: pin S wait on X (ms)                  460032                  136
+ASH samples: pin S wait on X, hot query                           469                    0
+ASH samples: pin S wait on X, insert                                0                    0
 OVERALL: PASS (17 checks)
 ```
 
-So the DROP test lost about a third of its throughput, and 88% of its
-database time was sessions waiting for one another to rebuild a cursor
-that the DDL had no reason to touch.
+So the DROP test lost a third of its throughput, and 87.5% of its database
+time was sessions waiting for one another to rebuild a cursor that the
+DDL had no reason to touch. In the EXCHANGE test the 10 hard parses are
+the insert's, one per exchange.
 
 ---
 
@@ -105,7 +119,8 @@ that the DDL had no reason to touch.
   `/ as sysdba` on the database host or as a user like `SYSTEM` over the
   network. Steps 2 to 4 run as the test user `PINX`.
 * `job_queue_processes >= NJOBS + 1` (25 with the defaults).
-* About 160 MB in the schema's default tablespace (the quota is 500 MB).
+* About 160 MB in the schema's default tablespace, plus about 150 MB per
+  hour of inserts while the workers run (the quota is 500 MB).
 * SQLcl (`sql`) or SQL\*Plus (`sqlplus`), and `bash`.
 * **Licensing:**
   * The PASS/FAIL verdicts come from session counters (`V$SESSION_EVENT`,
@@ -138,7 +153,7 @@ Then run the steps in order. Each one asks for the passwords it needs
 
 ```bash
 ./1_build.sh            # user, objects, data                          ~30 s
-./2_start_workers.sh    # 24 workers start running the hot query       ~10 s
+./2_start_workers.sh    # 24 workers: hot query, insert, commit        ~10 s
 ./run.sh status         # optional: watch them, any time
 ./3_test_drop.sh        # DROP test + reports                          ~90 s
 ./4_test_exchange.sh    # EXCHANGE test + reports + comparison         ~90 s
@@ -160,8 +175,8 @@ Extra scripts, run as `PINX` with `./run.sh <name>`:
 
 | Name | What it does |
 |------|--------------|
-| `status` | Each worker: its job, session, what it's doing right now, its heartbeat and executions. Then the hot query's executions per second, measured over 5 s. |
-| `state` | Where you are: the workers (how many run, what they are doing, the hot cursor's counters, executions per second), the row counts in `T` and `T_X` (counted with `COUNT(*)`: the partitions the tests use, `P1`, `T_X`), and the tests run so far. Steps 1, 3 and 4 print it too (3 and 4 before and after the DDL). |
+| `status` | Each worker: its job, session, what it's doing right now, its heartbeat and executions. Then the hot query's executions per second and the rows inserted per second, measured over 5 s. |
+| `state` | Where you are: the workers (how many run, what they are doing, the hot query and insert cursors' counters, executions and inserts per second), the row counts in `T` and `T_X` (counted with `COUNT(*)`: `PCUR`, the partitions the tests use, `P1`, `T_X`), and the tests run so far. Steps 1, 3 and 4 print it too (3 and 4 before and after the DDL). |
 | `stop_workers` | Stops the workers, keeps everything else. Step 2 starts them again. |
 | `report` | Prints the results and checks of the latest tests again. |
 | `evidence` | Writes the `reports/` files again. |
@@ -177,12 +192,15 @@ Extra scripts, run as `PINX` with `./run.sh <name>`:
   package, the worker procedure and the report views), then
   `pinx_lab.build_table`.
 * `build_table` creates `T` with `NPART` (400) range partitions of 1000
-  rows each, a local index on `GRP` and fresh statistics, plus an empty
-  `T_X` for the exchange.
+  rows each, plus the empty current partition `PCUR` (`VALUES LESS THAN
+  (MAXVALUE)`), a local index on `GRP` and fresh statistics. It also
+  creates the sequence `T_SEQ`, which starts above `P400`'s range, and
+  an empty `T_X` for the exchange.
 
 **2. Start the workers** (`2_start_workers.sh`): `pinx_lab.start_workers`
 starts `NJOBS` (24) scheduler jobs, `PINX_W001` to `PINX_W024`. Each one
-runs the hot query, pauses `THINK_MS` (20 ms), and repeats:
+runs the hot query, inserts `INSERTS` (1) row into `PCUR`, commits,
+pauses `THINK_MS` (20 ms), and repeats:
 
 ```sql
 select /*+ qb_name(pinx) */ count(*)
@@ -191,10 +209,17 @@ where  a.id < 1000 and b.id < 1000 and c.id < 1000 and d.id < 1000
 and    a.id = b.id and b.id = c.id and c.id = d.id
 and    a.grp = 7
 and    pinx_parse_marker(a.id) >= 0;
+
+insert /*+ qb_name(pinx_ins) */ into t (id, grp, pad)
+values (t_seq.nextval, mod(l_total, 50), 'current');
+commit;
 ```
 
-* The query prunes statically to `P1`. The `qb_name` hint tags it,
-  because PL/SQL strips comments but keeps hints.
+* The query prunes statically to `P1`. The insert's ids come from
+  `T_SEQ`, so every row lands in `PCUR`. The `qb_name` hints tag both
+  statements, because PL/SQL strips comments but keeps hints.
+* With `INSERTS = 0` the workers run the hot query only, as in earlier
+  versions of this harness.
 * After every execution a worker reads the one-row table `PINX_CTL`,
   which says `RUN`, `MEASURE` (a test is measuring) or `STOP`.
 * Every 2 seconds it writes a heartbeat to `PINX_POOL`. That's what
@@ -217,6 +242,8 @@ and    pinx_parse_marker(a.id) >= 0;
    snapshots its own session counters. The controller snapshots the
    instance counters and the hot cursor's `V$SQL` rows.
 5. **Run `NDDL` (10) DDL statements** spread evenly over `SECS` (60 s):
+   Both tests work on the partitions just below `PCUR` and never touch
+   `PCUR` or `P1`.
    - The DROP test drops the highest partition, ten times: `p400`,
      `p399`, ... `p391` on a fresh table.
    - The EXCHANGE test exchanges the highest partition with `T_X` ten
@@ -226,13 +253,14 @@ and    pinx_parse_marker(a.id) >= 0;
      after ten they are back in `p390`.
 
    Before each DDL, and again once things have settled (just before the
-   next DDL), the controller records a signature of the hot cursor. If
-   the signature changed, that DDL invalidated the cursor.
+   next DDL), the controller records a signature of the hot query cursor
+   and of the insert cursor. If a signature changed, that DDL
+   invalidated the cursor.
 
    The output shows, for each DDL: what the workers are doing 0.5 s
    after it, the rows in the dropped partition (DROP) or in the
-   exchanged partition and `T_X` (EXCHANGE), and whether the hot cursor
-   was invalidated by the time of the next DDL.
+   exchanged partition and `T_X` (EXCHANGE), and whether each of the two
+   cursors was invalidated by the time of the next DDL.
 6. **Close the window** (`PINX_CTL` = `RUN`). The workers take their end
    snapshots and carry on running. Then the second AWR snapshot.
 7. **Copy the window's ASH rows** for the worker and controller sessions
@@ -286,18 +314,20 @@ cursor and counter checks; only the ASH picture gets thin.
 | Where | What to look at |
 |-------|-----------------|
 | **Timeline** (`pinx_timeline_*.html`) | Bars are ASH samples of the worker sessions, stacked by event. Numbered markers are the DDLs: **red** means it invalidated the hot cursor, **grey** means it didn't. Hover for details. The tiles above each chart are the licence-free counters. |
-| **AWR report** (`pinx_run<N>_drop_awr.html`, `..._exchange_awr.html`) | *Top 10 Foreground Events by Total Wait Time*. DROP: `cursor: pin S wait on X` dominates DB time. EXCHANGE: only DB CPU. *SQL ordered by Parse Calls* and the *Library Cache Activity* section tell the same story. |
+| **AWR report** (`pinx_run<N>_drop_awr.html`, `..._exchange_awr.html`) | *Top 10 Foreground Events by Total Wait Time*. DROP: `cursor: pin S wait on X` dominates DB time. EXCHANGE: DB CPU, and a fraction of a second of `cursor: pin S wait on X` from the insert's re-parses. *SQL ordered by Parse Calls* and the *Library Cache Activity* section tell the same story. |
 | **ASH report** (`pinx_run<N>_*_ash.html`) | *Top User Events* and *Activity Over Time* for the exact measurement window. |
-| **Text report** (`report.sql`) | All metrics side by side, the elapsed time of each DDL, whether it invalidated the cursor, and the checks. |
+| **Text report** (`report.sql`) | All metrics side by side, the elapsed time of each DDL, whether it invalidated the hot query and the insert cursor, and the checks. |
 
 | Metric | Meaning |
 |--------|---------|
-| **DDLs that invalidated it** | The headline number: per DDL, did the hot cursor change between "just before" and "settled"? DROP: every time. EXCHANGE: never. |
-| **Workers: hard parses** | Hard parses in the worker sessions inside the window (`V$MYSTAT`). This includes recursive dictionary SQL triggered by each reparse, so it's larger than the number of DDLs. EXCHANGE: exactly 0. |
+| **Hot cursor: DDLs that invalidated it** | The headline number: per DDL, did the hot cursor change between "just before" and "settled"? DROP: every time. EXCHANGE: never. |
+| **Insert cursor: DDLs that invalidated it** | The same for the workers' `INSERT`. Both DDLs invalidate it every time. |
+| **Workers: hard parses** | Hard parses in the worker sessions inside the window (`V$MYSTAT`). DROP: the hot query and the insert, plus recursive dictionary SQL, so more than the number of DDLs. EXCHANGE: one per exchange (the insert); 0 with `INSERTS = 0`. |
+| **Workers: rows inserted per second** | Throughput of the insert. It runs in the same loop as the hot query, so it drops with it. |
 | **Workers: waits / time on cursor: pin S wait on X** | The pile-up: sessions waiting for another session to finish building the cursor they need (the workers' own `V$SESSION_EVENT`). |
 | **Workers: executions per second** | Throughput of the hot query. The DROP test loses everything while a pile-up lasts. |
 | **ddl_no_invalidate** | `V$SQL.DDL_NO_INVALIDATE` at the end. In 19c the values are `N` (no DDL skipped this cursor), `Y` (a DDL skipped it and it hasn't run since) and `X` (a DDL skipped it and it has run since). A hot cursor after an exchange shows `X`. |
-| **ASH samples** | Oracle's own sampler agreeing with the counters. |
+| **ASH samples** | Oracle's own sampler agreeing with the counters. The `pin S wait on X` samples are also split by statement (hot query, insert). |
 | **Instance: ...** | `V$SYSSTAT` / `V$SYSTEM_EVENT` deltas for the window. They include background activity and the DDL's own recursive SQL. Use them as a cross-check. |
 
 ### Checks
@@ -308,10 +338,19 @@ Each test must have completed, run all `NDDL` statements, measured all
 | | DROP test | EXCHANGE test |
 |---|---|---|
 | DDLs that invalidated the hot cursor | `= NDDL` | `0` |
-| Worker waits on `cursor: pin S wait on X` | `> 0` | `0` |
-| Worker hard parses | `> 0` | `0` |
-| `ddl_no_invalidate` | n/a | `Y` or `X` |
-| ASH samples on `cursor: pin S wait on X` (only with the Diagnostics Pack) | `> 0` | `0` |
+| Worker time in `cursor: pin S wait on X` | `> PARSE_MS` | `< PARSE_MS` |
+| Worker hard parses | `> 0` | `<=` DDLs that invalidated the insert cursor |
+| `ddl_no_invalidate` of the hot cursor | n/a | `Y` or `X` |
+| ASH samples on `cursor: pin S wait on X` for the hot query (only with the Diagnostics Pack) | `> 0` | `0` |
+
+The insert cursor is invalidated by both DDLs, so with `INSERTS > 0` the
+worker-wide checks can't expect zero. One re-parse of the hot query
+makes the other workers wait about `PARSE_MS` each, so a total below
+`PARSE_MS` means no hot-query pile-up happened. The hard-parse limit
+leaves room for the insert's re-parses only.
+
+With `INSERTS = 0` the stricter checks apply: zero waits on
+`cursor: pin S wait on X` and zero hard parses in the EXCHANGE test.
 
 ## Configuration
 
@@ -324,9 +363,10 @@ asked for in steps 2 to 4.
 
 | Variable | Default | Used in step | Effect |
 |----------|---------|--------------|--------|
-| `NPART`    | 400  | 1 | Partitions in `T`. Each DROP test uses up `NDDL` of them. |
+| `NPART`    | 400  | 1 | Partitions in `T`, below the current partition `PCUR`. Each DROP test uses up `NDDL` of them. |
 | `NJOBS`    | 24   | 2 | Concurrent worker sessions. A bigger pile-up per invalidation. Must be `<= job_queue_processes - 1`. |
 | `THINK_MS` | 20   | 2 | Pause after each execution. Keep the average number of busy sessions well under `cpu_count`. |
+| `INSERTS`  | 1    | 2 | Rows each worker inserts into `PCUR`, and commits, after each execution of the hot query. `0` = the hot query only. |
 | `WORKER_MINUTES` | 60 | 2 | The workers stop by themselves after this long. A test extends it when it needs more time. |
 | `NDDL`     | 10   | 3, 4 | DDL statements per test, the same for both. |
 | `SECS`     | 60   | 3, 4 | Measurement window. The DDLs are spaced `SECS / (NDDL+1)` apart, with a quiet tail at the end. Keep the gap above about 1.5 x `PARSE_MS`. |

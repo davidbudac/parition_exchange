@@ -24,12 +24,13 @@ column run_id     format 9999
 column kind       format a8
 column started    format a19
 column window_s   format 999.9
-column workload   format a34
+column workload   format a40
 column env        format a44
 select run_id, kind, to_char(started_at, 'YYYY-MM-DD HH24:MI:SS') started,
        round(extract(minute from (window_end - window_start)) * 60
            + extract(second from (window_end - window_start)), 1) window_s,
-       njobs||' jobs, '||npart||' parts, '||nddl||' DDLs' workload,
+       njobs||' jobs, '||npart||' parts, '||nddl||' DDLs'||
+       case when nvl(inserts, 0) > 0 then ', '||inserts||' ins' end workload,
        db_version||' '||con_name||' cpu='||cpu_count||' ash='||ash_enabled env
 from   pinx_run
 where  run_id in (&RUN_DROP, &RUN_EXCH)
@@ -49,13 +50,14 @@ group  by ord, metric
 order  by ord, metric;
 
 prompt
-prompt ==== DDL statements (elapsed time, and what each one did to the hot cursor)
+prompt ==== DDL statements (elapsed time, and what each one did to the hot query and insert cursors)
 column kind      format a8
 column seq       format 99
 column elapsed   format 99990.9 heading 'ms'
-column inval     format a11 heading 'Invalidated'
+column inval     format a9 heading 'Hot query'
+column ins_inval format a6 heading 'Insert'
 column ddl_text  format a90
-select r.kind, d.seq, d.elapsed_ms elapsed, d.invalidated inval, d.ddl_text
+select r.kind, d.seq, d.elapsed_ms elapsed, d.invalidated inval, nvl(d.ins_invalidated, '-') ins_inval, d.ddl_text
 from   pinx_v_ddl d join pinx_run r on r.run_id = d.run_id
 where  d.run_id in (&RUN_DROP, &RUN_EXCH)
 order  by d.run_id, d.seq;

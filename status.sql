@@ -47,10 +47,13 @@ declare
   l_kids     number;
   l_loads    number;
   l_inval    number;
+  l_inserts  number;
+  l_i1       number;
+  l_i2       number;
   procedure p(m varchar2) is begin dbms_output.put_line(m); end;
 begin
-  select phase, run_id, njobs, think_ms, deadline
-  into   l_phase, l_run, l_njobs, l_think, l_deadline
+  select phase, run_id, njobs, think_ms, inserts, deadline
+  into   l_phase, l_run, l_njobs, l_think, l_inserts, l_deadline
   from   pinx_ctl where id = 1;
   select count(*) into l_running from user_scheduler_running_jobs
   where  job_name like 'PINX\_W%' escape '\';
@@ -60,17 +63,23 @@ begin
     p('No workers running. Start them with ./2_start_workers.sh.');
     return;
   end if;
-  p(l_running||' of '||l_njobs||' workers running, '||l_think||' ms think time after each execution.');
+  p(l_running||' of '||l_njobs||' workers running. Each one, in a loop: the hot query on P1'||
+    case when nvl(l_inserts, 0) > 0 then ', insert '||l_inserts||' row(s) into PCUR, commit' end||
+    ', '||l_think||' ms think time.');
   p(case l_phase
       when 'MEASURE' then 'A test is measuring right now (run '||l_run||').'
       when 'STOP'    then 'They have been told to stop.'
-      else 'No test is running: the workers just run the hot query.' end);
+      else 'No test is running: no DDL, the workers just run their loop.' end);
   p('They stop by themselves at '||to_char(l_deadline, 'YYYY-MM-DD HH24:MI:SS')||'.');
 
   -- Executions of the hot query over 5 seconds, from V$SQL.
   select nvl(sum(executions), 0) into l_e1 from v$sql
   where  parsing_schema_name = user and upper(sql_text) like 'SELECT /*+ QB_NAME(PINX) */%';
+  select nvl(sum(executions), 0) into l_i1 from v$sql
+  where  parsing_schema_name = user and upper(sql_text) like 'INSERT /*+ QB_NAME(PINX\_INS) */%' escape '\';
   dbms_session.sleep(5);
+  select nvl(sum(executions), 0) into l_i2 from v$sql
+  where  parsing_schema_name = user and upper(sql_text) like 'INSERT /*+ QB_NAME(PINX\_INS) */%' escape '\';
   select nvl(sum(executions), 0), max(sql_id), count(*), nvl(sum(loads), 0), nvl(sum(invalidations), 0)
   into   l_e2, l_sql_id, l_kids, l_loads, l_inval
   from   v$sql
@@ -78,6 +87,9 @@ begin
   p('Hot query (sql_id '||l_sql_id||'): about '||round(greatest(l_e2 - l_e1, 0) / 5)||
     ' executions per second, all workers together (measured over 5 s).');
   p('Its cursor in V$SQL: '||l_kids||' child cursor(s), '||l_loads||' loads, '||l_inval||' invalidations so far.');
+  if nvl(l_inserts, 0) > 0 then
+    p('Inserts into PCUR: about '||round(greatest(l_i2 - l_i1, 0) / 5)||' rows per second, all workers together.');
+  end if;
 end;
 /
 set feedback on

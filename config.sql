@@ -8,12 +8,21 @@
 -- query. Must be <= job_queue_processes - 1. More sessions = bigger pile-up.
 define NJOBS  = 24
 
+-- Step 2: rows each worker inserts into the current partition PCUR of
+-- T, and commits, after every execution of the hot query (like an
+-- application writing into the newest partition while it reads). The
+-- tests never touch PCUR. 0 = the hot query only. At the default
+-- settings the workers insert about 1,000 rows per second, roughly
+-- 150 MB per hour of table and index.
+define INSERTS = 1
+
 -- Step 2: the workers stop by themselves after this many minutes, in
 -- case nobody stops them. Each test extends it if it needs more time.
 define WORKER_MINUTES = 60
 
--- Step 1: range partitions in table T (1000 rows each). The hot query
--- reads only P1; the DDL only touches the highest partitions. Every DROP
+-- Step 1: range partitions in table T (1000 rows each), plus the empty
+-- current partition PCUR on top for the workers' inserts. The hot query
+-- reads only P1; the DDL only touches the highest partitions below PCUR. Every DROP
 -- test removes NDDL of them, so 400 lasts for dozens of tests.
 define NPART  = 400
 

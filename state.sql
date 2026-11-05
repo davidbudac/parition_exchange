@@ -5,9 +5,10 @@
 --   ./run.sh state
 --
 -- Rows are counted now with COUNT(*), not taken from the optimizer
--- statistics. Lists the NDDL highest partitions (the ones the tests
--- use), P1 (the one the hot query reads), one line for the partitions
--- in between, and T_X.
+-- statistics. Lists PCUR (the current partition, which the workers
+-- insert into), the NDDL highest partitions below it (the ones the
+-- tests use), P1 (the one the hot query reads), one line for the
+-- partitions in between, and T_X.
 -- =====================================================================
 @@config.sql
 set lines 200 pages 100 tab off verify off feedback off serveroutput on size unlimited format wrapped
@@ -19,6 +20,7 @@ declare
   l_run      number;
   l_njobs    number;
   l_think    number;
+  l_inserts  number;
   l_deadline timestamp;
   l_running  number;
   l_alive    number;
@@ -29,10 +31,13 @@ declare
   l_kids     number;
   l_loads    number;
   l_inval    number;
+  l_i1       number;
+  l_i2       number;
+  l_ins_id   varchar2(13);
   procedure p(m varchar2) is begin dbms_output.put_line('  '||m); end;
 begin
-  select phase, run_id, njobs, think_ms, deadline
-  into   l_phase, l_run, l_njobs, l_think, l_deadline
+  select phase, run_id, njobs, think_ms, inserts, deadline
+  into   l_phase, l_run, l_njobs, l_think, l_inserts, l_deadline
   from   pinx_ctl where id = 1;
   select count(*) into l_running from user_scheduler_running_jobs
   where  job_name like 'PINX\_W%' escape '\';
@@ -42,12 +47,14 @@ begin
   if l_running = 0 then
     p('none running (start them with ./2_start_workers.sh)');
   else
-    p(l_running||' of '||l_njobs||' worker jobs running, '||l_alive||
-      ' with a heartbeat in the last 15 s, '||l_think||' ms think time');
+    p(l_running||' of '||l_njobs||' worker jobs running, '||l_alive||' with a heartbeat in the last 15 s');
+    p('each one, in a loop: the hot query on P1'||
+      case when nvl(l_inserts, 0) > 0 then ', insert '||l_inserts||' row(s) into PCUR, commit' end||
+      ', '||l_think||' ms think time');
     p(case l_phase
         when 'MEASURE' then 'a test is measuring right now (run '||l_run||')'
         when 'STOP'    then 'told to stop'
-        else 'no test running: they run the hot query only' end);
+        else 'no test running: no DDL, they just run their loop' end);
     p('they stop by themselves at '||to_char(l_deadline, 'YYYY-MM-DD HH24:MI:SS'));
     select listagg(cnt||' '||doing, ', ') within group (order by cnt desc, doing)
     into   l_doing
@@ -60,9 +67,12 @@ begin
     p('doing right now: '||nvl(l_doing, 'no worker sessions'));
   end if;
 
-  -- The hot query in V$SQL; executions over 5 s when the workers run.
+  -- The hot query and the insert in V$SQL; executions over 5 s when the
+  -- workers run.
   select nvl(sum(executions), 0) into l_e1 from v$sql
   where  parsing_schema_name = user and upper(sql_text) like 'SELECT /*+ QB_NAME(PINX) */%';
+  select nvl(sum(executions), 0) into l_i1 from v$sql
+  where  parsing_schema_name = user and upper(sql_text) like 'INSERT /*+ QB_NAME(PINX\_INS) */%' escape '\';
   if l_running > 0 then
     dbms_session.sleep(5);
   end if;
@@ -76,7 +86,20 @@ begin
     p('hot query (sql_id '||l_sql_id||'): '||l_kids||' child cursor(s), '||l_loads||' loads, '||
       l_inval||' invalidations, '||l_e2||' executions in total');
     if l_running > 0 then
-      p('about '||round(greatest(l_e2 - l_e1, 0) / 5)||' executions per second (measured over 5 s)');
+      p('  about '||round(greatest(l_e2 - l_e1, 0) / 5)||' executions per second (measured over 5 s)');
+    end if;
+  end if;
+  select nvl(sum(executions), 0), max(sql_id), count(*), nvl(sum(loads), 0), nvl(sum(invalidations), 0)
+  into   l_i2, l_ins_id, l_kids, l_loads, l_inval
+  from   v$sql
+  where  parsing_schema_name = user and upper(sql_text) like 'INSERT /*+ QB_NAME(PINX\_INS) */%' escape '\';
+  if l_kids = 0 then
+    p('insert: not in the shared pool');
+  else
+    p('insert    (sql_id '||l_ins_id||'): '||l_kids||' child cursor(s), '||l_loads||' loads, '||
+      l_inval||' invalidations, '||l_i2||' executions in total');
+    if l_running > 0 then
+      p('  about '||round(greatest(l_i2 - l_i1, 0) / 5)||' rows inserted per second (measured over 5 s)');
     end if;
   end if;
 end;
@@ -100,16 +123,21 @@ with seg as (
                              and o.subobject_name = p.partition_name
                              and o.object_type    = 'TABLE PARTITION'
          left join seg s on s.data_obj = o.data_object_id
-  where  p.table_name = 'T'
+  where  p.table_name = 'T' and p.partition_name <> 'PCUR'
+), cur as (
+  select count(*) cur_cnt from t partition (pcur)
 )
 select st_obj, st_rows, st_note
 from (
-  select 1 k, 0 pos, 'T' st_obj, sum(cnt) st_rows,
-         count(*)||' partitions, '||count(case when cnt = 0 then 1 end)||' of them empty' st_note
-  from   parts
+  select 1 k, 0 pos, 'T' st_obj, sum(cnt) + max(cur_cnt) st_rows,
+         count(*)||' partitions plus PCUR, '||count(case when cnt = 0 then 1 end)||' of them empty' st_note
+  from   parts cross join cur
+  union all
+  select 1.5, 0, '  PCUR', cur_cnt, 'current partition: the workers insert into it; no test changes it'
+  from   cur
   union all
   select case when pos = 1 and rn > &NDDL then 4 else 2 end, pos, '  '||pname, cnt,
-         case when rn = 1     then 'highest partition: the DROP test drops it, the EXCHANGE test exchanges it with T_X'
+         case when rn = 1     then 'highest below PCUR: the DROP test drops it, the EXCHANGE test exchanges it with T_X'
               when rn <= &NDDL then 'the DROP test drops it'
               else 'read by the hot query; no test changes it' end
   from   parts
